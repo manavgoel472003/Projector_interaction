@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.7.0
+
+- Discover any connected external V4L2 camera instead of depending on one
+  hard-coded Innomaker device path.
+- Prefer stable `by-id` and `by-path` primary image streams, skip metadata
+  nodes, and retain protection against the known PC webcam.
+- Support explicit camera paths and the `WALL_TOUCH_CAMERA` environment
+  variable for multi-camera setups.
+- Add luminous constellation connections and a wider three-tier star-size
+  distribution.
+
 ## 2.6.0
 
 - Keep Paint, Spill, Ripple, and Pulse plus Constellation and Magnetic Sand;

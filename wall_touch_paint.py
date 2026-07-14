@@ -33,8 +33,8 @@ from wall_touch_effects import PulseGrid, WatercolorPool
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "2.6"
-DEFAULT_CAMERA = "/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0"
+APP_VERSION = "2.7"
+DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
 DEFAULT_CALIBRATION = ROOT / "wall_touch_calibration.json"
 BLOCKED_CAMERA_NAMES = ("usb2.0 fhd uvc webcam", "shinetech")
@@ -61,7 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Calibrated projector touch-paint demo using one external RGB camera."
     )
-    parser.add_argument("--camera", default=DEFAULT_CAMERA, help="Explicit external V4L2 device path.")
+    parser.add_argument(
+        "--camera",
+        default=os.environ.get("WALL_TOUCH_CAMERA", DEFAULT_CAMERA),
+        help="External V4L2 device path, or 'auto' to discover one (default).",
+    )
     parser.add_argument("--camera-width", type=int, default=1280)
     parser.add_argument("--camera-height", type=int, default=720)
     parser.add_argument("--camera-fps", type=int, default=30)
@@ -95,12 +99,62 @@ def camera_name(device_path: Path) -> str:
     return name_file.read_text().strip() if name_file.exists() else "unknown"
 
 
+def is_primary_video_node(device_path: Path) -> bool:
+    resolved = device_path.resolve()
+    if not resolved.name.startswith("video"):
+        return False
+    index_file = Path("/sys/class/video4linux") / resolved.name / "index"
+    try:
+        return index_file.read_text().strip() == "0"
+    except OSError:
+        return True
+
+
+def discover_external_cameras() -> list[tuple[str, str]]:
+    candidates: list[Path] = []
+    for directory in (Path("/dev/v4l/by-id"), Path("/dev/v4l/by-path")):
+        if directory.exists():
+            candidates.extend(sorted(directory.glob("*-video-index0")))
+    candidates.extend(
+        sorted(
+            Path("/dev").glob("video*"),
+            key=lambda path: int(path.name[5:]) if path.name[5:].isdigit() else 10_000,
+        )
+    )
+
+    cameras: list[tuple[str, str]] = []
+    seen_devices: set[Path] = set()
+    for path in candidates:
+        if not path.exists() or not is_primary_video_node(path):
+            continue
+        resolved = path.resolve()
+        if resolved in seen_devices:
+            continue
+        seen_devices.add(resolved)
+        name = camera_name(path)
+        if any(token in name.lower() for token in BLOCKED_CAMERA_NAMES):
+            continue
+        cameras.append((str(path), name))
+    return cameras
+
+
 def validate_camera(requested: str) -> tuple[str, str]:
+    if requested.strip().lower() == "auto":
+        cameras = discover_external_cameras()
+        if not cameras:
+            raise RuntimeError(
+                "No external camera was found. Connect a V4L2 camera or pass "
+                "--camera /dev/videoN explicitly."
+            )
+        return cameras[0]
     if requested.isdigit():
         raise RuntimeError("Camera indexes are disabled. Pass an explicit /dev/video* or /dev/v4l/by-id/* path.")
     path = Path(requested)
     if not path.exists():
-        raise RuntimeError(f"External camera path does not exist: {requested}")
+        raise RuntimeError(
+            f"External camera path does not exist: {requested}. "
+            "Use --camera auto to discover the currently connected camera."
+        )
     name = camera_name(path)
     if any(token in name.lower() for token in BLOCKED_CAMERA_NAMES):
         raise RuntimeError(f"Refusing PC webcam device {requested!r}: {name}")

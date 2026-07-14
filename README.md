@@ -40,8 +40,10 @@ cd Projector_interaction
 the official MediaPipe Hand Landmarker model, verifies its SHA-256 checksum,
 and runs the tests.
 
-The default camera is the tested Innomaker U20CAM stable device path. Override
-it with another external camera path when needed:
+The launcher automatically discovers the primary video stream of a connected
+external V4L2 camera. It prefers stable `/dev/v4l/by-id` paths, so replacing a
+camera does not require editing the launcher. If several external cameras are
+connected, select one explicitly:
 
 ```bash
 ./run_wall_touch_demo.sh \
@@ -50,8 +52,9 @@ it with another external camera path when needed:
 ```
 
 Do not use `/dev/video0` style numeric indexes unless you have independently
-verified the device. The program intentionally refuses numeric camera
-arguments such as `0`.
+verified the device. Explicit paths such as `--camera /dev/video4` work, but
+ambiguous numeric arguments such as `--camera 4` are intentionally refused.
+The camera can also be selected persistently with `WALL_TOUCH_CAMERA`.
 
 ## Calibration
 

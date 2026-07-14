@@ -1,7 +1,8 @@
-# Single External-Camera Wall Touch Demo
+# External-Camera Wall Touch Demo
 
-This demo uses the Innomaker external camera only. It explicitly refuses the
-known Shinetech PC webcam and does not fall back to a camera index.
+This demo supports standard external V4L2 cameras. It discovers the primary
+image stream automatically, prefers stable device paths, and explicitly
+refuses the known Shinetech PC webcam.
 
 ## Camera placement
 
@@ -28,6 +29,14 @@ Run:
 
 ```bash
 ./run_wall_touch_demo.sh --fresh
+```
+
+To choose a camera explicitly or override automatic selection:
+
+```bash
+./run_wall_touch_demo.sh --camera /dev/video4 --fresh
+# Or persist the selection for future launches:
+WALL_TOUCH_CAMERA=/dev/video4 ./run_wall_touch_demo.sh --fresh
 ```
 
 For a different projector layout, provide its resolution and desktop origin:
