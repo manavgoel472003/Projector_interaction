@@ -48,7 +48,8 @@ from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "3.2"
+APP_VERSION = "3.3"
+DEPTH_TOUCH_MODE = "hand-contact-v1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
 DEFAULT_CALIBRATION = ROOT / "wall_touch_calibration.json"
@@ -108,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recalibrate-depth",
         action="store_true",
-        help="Keep saved projection points but relearn Orbbec wall and guided touch depth.",
+        help="Keep saved projection points but relearn the Orbbec wall and hand contact.",
     )
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
@@ -123,6 +124,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--depth-component-min-area", type=int, default=80)
     parser.add_argument("--depth-noise-multiplier", type=float, default=0.75)
     parser.add_argument("--depth-touch-samples", type=int, default=10)
+    parser.add_argument(
+        "--depth-calibration-max-gap-mm",
+        type=float,
+        default=60.0,
+        help="Largest wall gap accepted while learning a guided hand press.",
+    )
     parser.add_argument("--require-index-extension", action="store_true")
     parser.add_argument("--brush-radius", type=int, default=46)
     parser.add_argument("--paint-alpha", type=float, default=0.46)
@@ -495,8 +502,9 @@ def save_calibration(
     elif wall_depth_model is None:
         reference_path.unlink(missing_ok=True)
     data = {
-        "version": 3,
+        "version": 4,
         "sensor_mode": sensor_mode,
+        "depth_touch_mode": DEPTH_TOUCH_MODE if sensor_mode == "orbbec-depth" else None,
         "camera_identity": camera_identity,
         "camera_frame_size": list(frame_size),
         "projector_output_size": list(output_size),
@@ -668,6 +676,25 @@ def main() -> None:
     depth_touch_profile = (
         saved.get("depth_touch_profile") if saved and depth_enabled else None
     )
+    if (
+        depth_touch_profile is not None
+        and saved.get("depth_touch_mode") != DEPTH_TOUCH_MODE
+    ):
+        depth_touch_profile = None
+        print(
+            "The saved touch profile used the old fingertip contact model. "
+            "Wall geometry is being kept; touch will be relearned for an open hand."
+        )
+    if depth_touch_profile is not None:
+        tightened_profile = depth_touch_profile.tightened(
+            maximum_gap_mm=args.depth_calibration_max_gap_mm
+        )
+        if tightened_profile != depth_touch_profile:
+            print(
+                "Tightened saved touch profile: "
+                f"maximum gap {tightened_profile.maximum_gap_mm:.0f} mm."
+            )
+        depth_touch_profile = tightened_profile
     if depth_enabled and args.recalibrate_depth and saved:
         wall_depth_model = None
         wall_depth_reference = None
@@ -705,7 +732,7 @@ def main() -> None:
             wall_noise_mm=wall_depth_noise,
             minimum_change_mm=args.depth_change_min_mm,
             minimum_component_area=args.depth_component_min_area,
-            near_wall_limit_mm=args.touch_max_gap_mm + 15.0,
+            near_wall_limit_mm=args.depth_calibration_max_gap_mm,
             noise_multiplier=args.depth_noise_multiplier,
         )
         if (
@@ -728,7 +755,10 @@ def main() -> None:
         else None
     )
     if collecting_depth_touch:
-        print("Guided touch calibration needed. Touch and hold each projected target.")
+        print(
+            "Guided hand calibration needed. Center an open hand on each target "
+            "and press it against the wall."
+        )
     base_canvas = make_base_canvas(*output_size)
     canvas = base_canvas.copy()
     brush = PaintBrush(args.brush_radius, args.paint_alpha)
@@ -920,7 +950,10 @@ def main() -> None:
                             f"{wall_depth_model.rmse_mm:.1f} mm RMSE from "
                             f"{len(wall_depth_samples)} frames."
                         )
-                        print("Guided touch calibration started. Touch and hold each projected target.")
+                        print(
+                            "Guided hand calibration started. Center an open hand on each "
+                            "target and press it against the wall."
+                        )
             landmarks = None
             depth_camera_point = None
             depth_observation = None
@@ -967,6 +1000,8 @@ def main() -> None:
                         observation
                         for observation in depth_observations
                         if np.linalg.norm(observation.camera_point - target_camera) <= 140.0
+                        and observation.gap_mm <= args.depth_calibration_max_gap_mm
+                        and observation.contact_area >= depth_tracker.minimum_contact_area
                     ]
                     if target_present and nearby:
                         sample = min(
@@ -979,7 +1014,8 @@ def main() -> None:
                         if len(current_target_samples) == 1:
                             print(
                                 f"Target {depth_touch_target_index + 1}: contact seen "
-                                f"({sample.gap_mm:.0f} mm, area {sample.component_area})."
+                                f"({sample.gap_mm:.0f} mm, hand contact area "
+                                f"{sample.contact_area})."
                             )
                         depth_camera_point = sample.camera_point
                         if len(current_target_samples) >= args.depth_touch_samples:
@@ -988,7 +1024,8 @@ def main() -> None:
                             depth_touch_target_index += 1
                             if depth_touch_target_index >= len(depth_touch_targets):
                                 depth_touch_profile = DepthTouchProfile.fit(
-                                    guided_touch_samples
+                                    guided_touch_samples,
+                                    maximum_contact_gap_mm=args.depth_calibration_max_gap_mm,
                                 )
                                 depth_lock = DepthContactLock(depth_touch_profile)
                                 collecting_depth_touch = False
@@ -1010,7 +1047,7 @@ def main() -> None:
                                     depth_touch_profile,
                                 )
                                 print(
-                                    "Guided touch learned: "
+                                    "Guided hand contact learned: "
                                     f"gap {depth_touch_profile.minimum_gap_mm:.0f}-"
                                     f"{depth_touch_profile.maximum_gap_mm:.0f} mm, "
                                     f"area {depth_touch_profile.minimum_component_area}-"
@@ -1050,13 +1087,13 @@ def main() -> None:
                 if smoothed_tip is None:
                     smoothed_tip = raw_tip.copy()
                 else:
-                    smoothed_tip = 0.45 * smoothed_tip + 0.55 * raw_tip
+                    smoothed_tip = 0.15 * smoothed_tip + 0.85 * raw_tip
                 mapped_tip = smoothed_tip.copy()
                 raw_gap_mm = depth_observation.gap_mm
                 if smoothed_gap_mm is None:
                     smoothed_gap_mm = raw_gap_mm
                 else:
-                    smoothed_gap_mm = 0.45 * smoothed_gap_mm + 0.55 * raw_gap_mm
+                    smoothed_gap_mm = 0.25 * smoothed_gap_mm + 0.75 * raw_gap_mm
                 gap_mm = smoothed_gap_mm
                 extended = True
                 inside = point_in_output(mapped_tip, *output_size, margin=4)
@@ -1245,7 +1282,7 @@ def main() -> None:
                         f"{args.depth_touch_samples} samples"
                     )
                 else:
-                    detail = "Press and hold one fingertip on the projected target"
+                    detail = "Center an open hand on the target and press it against the wall"
             elif collecting_touch:
                 status = f"TOUCH CALIBRATION: {len(touch_samples)}/{args.touch_samples}"
                 target = np.array([args.projector_width / 2, args.projector_height / 2], dtype=np.float32)

@@ -19,9 +19,11 @@ known PC webcam as its RGB fallback.
 - `sand`: metallic grains attracted into touch-driven vortices
 
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
-sensor noise. Five guided finger touches then learn the real contact gap and
-hand-component size for the current camera distance. A cursor appears only
-after three spatially consistent matching frames.
+sensor noise. Five guided open-hand presses then learn the real contact gap and
+palm-contact patch size for the current camera distance. The depth tracker uses
+the centroid of the largest near-wall contact patch, so it does not depend on a
+small fingertip silhouette. A cursor appears only after three spatially
+consistent matching frames.
 
 ## Requirements
 
@@ -94,8 +96,9 @@ Format and stream settings can be overridden when testing other hardware:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep the projected area empty while 45 wall-depth frames are collected
    (about three seconds on the USB 2.1 profile).
-4. Touch and hold the five targets in sequence: center, upper-left,
-   upper-right, lower-right, and lower-left. Each advances automatically.
+4. Center an open hand over each of the five targets and press it against the
+   wall: center, upper-left, upper-right, lower-right, and lower-left. Each
+   advances automatically.
 5. Touch and drag inside the projected region.
 
 Geometry is stored in `wall_touch_calibration.json`; the depth reference and
@@ -147,11 +150,11 @@ docs/                  hardware and calibration notes
 
 ## Limitations
 
-Depth accuracy is limited at fingertip silhouettes, longer camera distances,
-and reflective or transparent walls. Guided calibration learns the measured
-contact range, while `--touch-max-gap-mm 30 --depth-noise-multiplier 0.75`
-remain pre-calibration defaults. Move the camera closer when possible. RGB
-fallback still uses MediaPipe and approximate hand size.
+Depth accuracy is limited by depth resolution at longer camera distances and
+by reflective or transparent walls. Guided calibration learns the measured
+open-hand contact range, rejects approach frames beyond `60 mm`, and tracks the
+palm-sized contact patch instead of a fingertip. Move the camera closer when
+possible. RGB fallback still uses MediaPipe and approximate hand size.
 
 No software license has been selected for this repository yet. Add one before
 publishing if others should be allowed to copy, modify, or redistribute it.

@@ -157,6 +157,43 @@ class DepthTouchTests(unittest.TestCase):
         self.assertIsNone(lock.update([valid]))
         self.assertIsNotNone(lock.update([valid]))
 
+    def test_guided_profile_ignores_approach_frames_and_caps_legacy_range(self):
+        contact = [
+            DepthContactObservation(np.array([40, 50], np.float32), 25 + index % 8, 900)
+            for index in range(30)
+        ]
+        approach = [
+            DepthContactObservation(np.array([40, 50], np.float32), 90 + index, 4000)
+            for index in range(20)
+        ]
+
+        profile = DepthTouchProfile.fit(contact + approach, maximum_contact_gap_mm=60)
+        legacy = DepthTouchProfile(19.5, 171, 598, 74286, 50).tightened()
+
+        self.assertLessEqual(profile.maximum_gap_mm, 60)
+        self.assertLess(profile.maximum_component_area, 4000)
+        self.assertEqual(legacy.maximum_gap_mm, 60)
+        self.assertEqual(legacy.maximum_component_area, 40000)
+
+    def test_guided_profile_uses_hand_contact_patch_not_arm_size(self):
+        samples = [
+            DepthContactObservation(
+                np.array([70, 50], np.float32),
+                24 + index % 4,
+                5000 + index * 100,
+                90 + index,
+            )
+            for index in range(15)
+        ]
+
+        profile = DepthTouchProfile.fit(samples)
+        same_hand = DepthContactObservation(
+            np.array([70, 50], np.float32), 26, 12000, 96
+        )
+
+        self.assertLess(profile.maximum_component_area, 500)
+        self.assertTrue(profile.accepts(same_hand))
+
     def test_target_presence_requires_strong_local_foreground(self):
         reference = np.full((100, 140), 1200, np.float32)
         noise = np.full(reference.shape, 15, np.float32)
@@ -184,6 +221,40 @@ class DepthTouchTests(unittest.TestCase):
         self.assertAlmostEqual(contact.gap_mm, 24.0, delta=1.0)
         self.assertLess(contact.camera_point[0], 76)
         self.assertGreater(contact.component_area, 1500)
+
+    def test_depth_tracker_centers_open_hand_contact_patch(self):
+        reference = np.full((120, 180), 1200, np.float32)
+        current = reference.copy()
+        current[40:80, 35:70] = 1172
+        current[52:68, 65:135] = 1080
+        quad = np.array([[10, 10], [170, 10], [170, 110], [10, 110]], np.float32)
+
+        contact = DepthContactTracker(reference, quad, temporal_frames=1).detect(current)
+
+        self.assertIsNotNone(contact)
+        self.assertAlmostEqual(contact.gap_mm, 28.0, delta=1.0)
+        self.assertAlmostEqual(contact.camera_point[0], 52.0, delta=3.0)
+        self.assertAlmostEqual(contact.camera_point[1], 59.5, delta=3.0)
+        self.assertGreater(contact.contact_area, 1000)
+
+    def test_depth_tracker_keeps_small_distant_hand_patch(self):
+        reference = np.full((90, 140), 1400, np.float32)
+        current = reference.copy()
+        current[36:47, 42:53] = 1370
+        current[40:45, 50:70] = 1280
+        quad = np.array([[5, 5], [134, 5], [134, 84], [5, 84]], np.float32)
+
+        contact = DepthContactTracker(
+            reference,
+            quad,
+            minimum_component_area=40,
+            minimum_contact_area=6,
+            temporal_frames=1,
+        ).detect(current)
+
+        self.assertIsNotNone(contact)
+        self.assertAlmostEqual(contact.gap_mm, 30.0, delta=1.0)
+        self.assertGreaterEqual(contact.contact_area, 80)
 
     def test_depth_tracker_reports_hover_gap_for_gate_rejection(self):
         reference = np.full((100, 140), 1500, np.float32)
@@ -282,7 +353,7 @@ class DepthTouchTests(unittest.TestCase):
             inside=True,
             index_extended=True,
         )
-        self.assertEqual(hover.reason, "finger above wall")
+        self.assertEqual(hover.reason, "hand above wall")
         self.assertFalse(first.active)
         self.assertTrue(contact.active)
         self.assertEqual(contact.distance_mm, 22)

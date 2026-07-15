@@ -6,7 +6,12 @@ from unittest.mock import patch
 import numpy as np
 
 from wall_touch_core import DepthTouchProfile, WallDepthModel
-from wall_touch_paint import camera_stream_profile, depth_reference_path, validate_camera
+from wall_touch_paint import (
+    DEPTH_TOUCH_MODE,
+    camera_stream_profile,
+    depth_reference_path,
+    validate_camera,
+)
 from wall_touch_paint import load_calibration, save_calibration
 
 
@@ -88,6 +93,7 @@ class CameraSelectionTests(unittest.TestCase):
         np.testing.assert_allclose(loaded["wall_depth_reference"], reference)
         np.testing.assert_allclose(loaded["wall_depth_noise"], noise)
         self.assertEqual(loaded["depth_touch_profile"], profile)
+        self.assertEqual(loaded["depth_touch_mode"], DEPTH_TOUCH_MODE)
         self.assertIsNone(rejected)
 
 

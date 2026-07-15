@@ -177,6 +177,11 @@ class DepthContactObservation:
     camera_point: np.ndarray
     gap_mm: float
     component_area: int
+    contact_area: int = 0
+
+    @property
+    def interaction_area(self) -> int:
+        return self.contact_area if self.contact_area > 0 else self.component_area
 
 
 @dataclass(frozen=True)
@@ -188,24 +193,73 @@ class DepthTouchProfile:
     sample_count: int
 
     @classmethod
-    def fit(cls, samples: list[DepthContactObservation]) -> "DepthTouchProfile":
+    def fit(
+        cls,
+        samples: list[DepthContactObservation],
+        maximum_contact_gap_mm: float = 60.0,
+    ) -> "DepthTouchProfile":
         if len(samples) < 12:
             raise ValueError("Not enough guided touch samples")
         gaps = np.asarray([sample.gap_mm for sample in samples], dtype=np.float32)
-        areas = np.asarray([sample.component_area for sample in samples], dtype=np.float32)
+        areas = np.asarray([sample.interaction_area for sample in samples], dtype=np.float32)
+        selected = gaps <= maximum_contact_gap_mm
+        if np.count_nonzero(selected) < 12:
+            selected_indices = np.argsort(gaps)[: max(12, int(len(gaps) * 0.4))]
+            selected = np.zeros(len(gaps), dtype=bool)
+            selected[selected_indices] = True
+        contact_gaps = gaps[selected]
+        contact_areas = areas[selected]
+        minimum_gap = min(
+            max(5.0, float(np.percentile(contact_gaps, 5)) - 6.0),
+            float(maximum_contact_gap_mm) - 5.0,
+        )
+        maximum_gap = min(
+            float(maximum_contact_gap_mm),
+            float(np.percentile(contact_gaps, 95)) + 6.0,
+        )
+        maximum_gap = max(maximum_gap, minimum_gap + 5.0)
         return cls(
-            minimum_gap_mm=max(5.0, float(np.percentile(gaps, 5)) - 10.0),
-            maximum_gap_mm=float(np.percentile(gaps, 95)) + 10.0,
-            minimum_component_area=max(60, int(np.percentile(areas, 10) * 0.45)),
-            maximum_component_area=max(200, int(np.percentile(areas, 90) * 2.5)),
-            sample_count=len(samples),
+            minimum_gap_mm=minimum_gap,
+            maximum_gap_mm=maximum_gap,
+            minimum_component_area=max(
+                8, int(np.percentile(contact_areas, 10) * 0.30)
+            ),
+            maximum_component_area=max(
+                96, int(np.percentile(contact_areas, 95) * 3.0)
+            ),
+            sample_count=int(np.count_nonzero(selected)),
+        )
+
+    def tightened(
+        self,
+        maximum_gap_mm: float = 60.0,
+        maximum_component_area: int = 40_000,
+    ) -> "DepthTouchProfile":
+        capped_maximum_gap = min(self.maximum_gap_mm, maximum_gap_mm)
+        capped_minimum_gap = min(
+            self.minimum_gap_mm,
+            max(0.0, capped_maximum_gap - 5.0),
+        )
+        capped_maximum_area = min(
+            self.maximum_component_area, maximum_component_area
+        )
+        capped_minimum_area = min(
+            self.minimum_component_area,
+            max(1, capped_maximum_area - 1),
+        )
+        return DepthTouchProfile(
+            minimum_gap_mm=capped_minimum_gap,
+            maximum_gap_mm=capped_maximum_gap,
+            minimum_component_area=capped_minimum_area,
+            maximum_component_area=capped_maximum_area,
+            sample_count=self.sample_count,
         )
 
     def accepts(self, observation: DepthContactObservation) -> bool:
         return bool(
             self.minimum_gap_mm <= observation.gap_mm <= self.maximum_gap_mm
             and self.minimum_component_area
-            <= observation.component_area
+            <= observation.interaction_area
             <= self.maximum_component_area
         )
 
@@ -267,7 +321,7 @@ class DepthContactLock:
             return None
 
         if self._point is None:
-            selected = max(accepted, key=lambda item: item.component_area)
+            selected = max(accepted, key=lambda item: item.interaction_area)
             self._point = selected.camera_point.copy()
             self._consecutive = 1
         else:
@@ -286,7 +340,10 @@ class DepthContactLock:
         if self._consecutive < self.acquisition_frames:
             return None
         return DepthContactObservation(
-            self._point.copy(), selected.gap_mm, selected.component_area
+            self._point.copy(),
+            selected.gap_mm,
+            selected.component_area,
+            selected.contact_area,
         )
 
 
@@ -329,14 +386,14 @@ def depth_target_foreground_metrics(
     if valid_count < 40:
         return False, 0.0, 0, valid_count
     gap = ref_patch - current_patch
-    strong_threshold = np.maximum(55.0, 1.35 * noise_patch + 12.0)
+    strong_threshold = np.maximum(18.0, 1.10 * noise_patch + 8.0)
     strong_count = int(np.count_nonzero(valid & (gap >= strong_threshold)))
     gap_p90 = float(np.percentile(gap[valid], 90))
-    return strong_count >= 18, gap_p90, strong_count, valid_count
+    return strong_count >= 12, gap_p90, strong_count, valid_count
 
 
 class DepthContactTracker:
-    """Locate the part of a foreground depth component nearest the wall."""
+    """Track the largest near-wall hand patch in each foreground component."""
 
     def __init__(
         self,
@@ -346,6 +403,7 @@ class DepthContactTracker:
         minimum_change_mm: float = 15.0,
         maximum_change_mm: float = 800.0,
         minimum_component_area: int = 80,
+        minimum_contact_area: int = 8,
         near_wall_limit_mm: float = 60.0,
         noise_multiplier: float = 0.75,
         temporal_frames: int = 3,
@@ -372,6 +430,7 @@ class DepthContactTracker:
         self.minimum_change_mm = float(minimum_change_mm)
         self.maximum_change_mm = float(maximum_change_mm)
         self.minimum_component_area = int(minimum_component_area)
+        self.minimum_contact_area = max(4, int(minimum_contact_area))
         self.near_wall_limit_mm = float(near_wall_limit_mm)
         self.noise_multiplier = float(noise_multiplier)
         self._history: deque[np.ndarray] = deque(maxlen=max(1, int(temporal_frames)))
@@ -383,6 +442,7 @@ class DepthContactTracker:
         )
         self._open_kernel = np.ones((3, 3), dtype=np.uint8)
         self._close_kernel = np.ones((5, 5), dtype=np.uint8)
+        self._contact_close_kernel = np.ones((3, 3), dtype=np.uint8)
         self.current_depth_mm: np.ndarray | None = None
 
     def observations(self, depth_mm: np.ndarray) -> list[DepthContactObservation]:
@@ -415,6 +475,11 @@ class DepthContactTracker:
             & (gap >= change_threshold)
             & (gap <= self.maximum_change_mm)
         ).astype(np.uint8) * 255
+        contact_eligible = (
+            valid
+            & (gap >= change_threshold)
+            & (gap <= self.near_wall_limit_mm)
+        )
         foreground = cv2.morphologyEx(
             foreground, cv2.MORPH_OPEN, self._open_kernel
         )
@@ -430,9 +495,50 @@ class DepthContactTracker:
             area = int(stats[label, cv2.CC_STAT_AREA])
             if area < self.minimum_component_area:
                 continue
-            ys, xs = np.nonzero(labels == label)
+            component = labels == label
+            ys, xs = np.nonzero(component)
             values = gap[ys, xs]
             near_percentile = float(np.percentile(values, 10.0))
+
+            raw_contact = component & contact_eligible
+            contact_mask = raw_contact.astype(np.uint8) * 255
+            contact_mask = cv2.morphologyEx(
+                contact_mask, cv2.MORPH_CLOSE, self._contact_close_kernel
+            )
+            contact_count, contact_labels, _, _ = (
+                cv2.connectedComponentsWithStats(contact_mask, connectivity=8)
+            )
+            contact_label = 0
+            contact_area = 0
+            for candidate_label in range(1, contact_count):
+                candidate_area = int(
+                    np.count_nonzero(
+                        raw_contact & (contact_labels == candidate_label)
+                    )
+                )
+                if candidate_area > contact_area:
+                    contact_label = candidate_label
+                    contact_area = candidate_area
+
+            if contact_area >= self.minimum_contact_area:
+                contact_ys, contact_xs = np.nonzero(
+                    raw_contact & (contact_labels == contact_label)
+                )
+                contact_gaps = gap[contact_ys, contact_xs]
+                point = np.array(
+                    [np.mean(contact_xs), np.mean(contact_ys)],
+                    dtype=np.float32,
+                )
+                observation = DepthContactObservation(
+                    point,
+                    float(np.percentile(contact_gaps, 20.0)),
+                    area,
+                    contact_area,
+                )
+                observations.append(observation)
+                continue
+
+            # Preserve a hover observation so the gate can report and reject it.
             location_limit = min(
                 float(np.percentile(values, 20.0)),
                 near_percentile + 8.0,
@@ -448,7 +554,7 @@ class DepthContactTracker:
                 ],
                 dtype=np.float32,
             )
-            observation = DepthContactObservation(point, near_percentile, area)
+            observation = DepthContactObservation(point, near_percentile, area, 0)
             observations.append(observation)
 
         return observations
@@ -607,9 +713,9 @@ class DepthTouchGate:
             self.reset()
             return TouchDecision(False, False, None, "outside projection", gap_mm)
         if not index_extended:
-            return self._temporary_loss(timestamp, gap_mm, "finger pose uncertain")
+            return self._temporary_loss(timestamp, gap_mm, "hand pose uncertain")
         if gap_mm > self.maximum_gap_mm:
-            return self._temporary_loss(timestamp, gap_mm, "finger above wall")
+            return self._temporary_loss(timestamp, gap_mm, "hand above wall")
         if gap_mm < self.minimum_gap_mm:
             return self._temporary_loss(timestamp, gap_mm, "depth behind wall")
 
@@ -624,7 +730,7 @@ class DepthTouchGate:
         if float(np.linalg.norm(point - self._candidate_origin)) > self.maximum_dwell_motion:
             self._candidate_since = timestamp
             self._candidate_origin = point.copy()
-            return TouchDecision(False, True, None, "steady fingertip", gap_mm)
+            return TouchDecision(False, True, None, "steady hand", gap_mm)
         if timestamp - self._candidate_since >= self.dwell_seconds:
             self._active = True
             return TouchDecision(True, True, None, "touch", gap_mm)

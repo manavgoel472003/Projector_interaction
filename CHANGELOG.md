@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.3.0
+
+- Replace fingertip-sized Orbbec localization with the centroid of the largest
+  near-wall hand-contact patch for more depth pixels at longer distances.
+- Learn contact-patch area independently of the connected arm size and retain
+  small distant hand patches down to eight valid depth pixels.
+- Exclude guided approach frames beyond `60 mm`, cap overly broad saved gap
+  ranges, reject oversized legacy components, and reduce depth cursor lag.
+- Preserve wall geometry and depth background while automatically relearning
+  one legacy fingertip touch profile as an open-hand profile.
+- Update calibration prompts and diagnostics to guide an open-palm press at all
+  five projected targets.
+
 ## 3.2.1
 
 - Enlarge all constellation size tiers and add layered star bloom, white-hot

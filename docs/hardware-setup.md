@@ -78,9 +78,10 @@ For a different projector layout, provide its resolution and desktop origin:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep people and objects out of the projected area while the green depth
    calibration ring fills for 45 frames.
-4. Touch and hold the center target, then the upper-left, upper-right,
-   lower-right, and lower-left targets. Each target advances automatically
-   after collecting a stable positive contact.
+4. Center an open hand on the center target and press it against the wall, then
+   repeat at the upper-left, upper-right, lower-right, and lower-left targets.
+   Each target advances automatically after collecting a stable hand-contact
+   patch.
 5. Touch and drag within the projected area.
 6. Press `t` only when intentionally relearning the wall and touch profile.
 
@@ -126,21 +127,28 @@ layout have not moved.
 ## What counts as touch
 
 In Orbbec mode, 45 empty-wall frames produce a per-pixel median depth and noise
-map. A three-frame temporal median is compared with that reference, and direct
-depth foreground components provide the interaction coordinate. Five guided
-touches learn accepted contact gap and component area. A component must match
-that profile for three spatially consistent frames before it becomes a cursor.
-MediaPipe is not used in this mode. The pre-calibration defaults are:
+map. A three-frame temporal median is compared with that reference. Within each
+connected hand/arm foreground region, the tracker finds the largest patch no
+more than `60 mm` from the wall and uses that patch's centroid as the
+interaction coordinate. This lets an open palm provide many more depth pixels
+than one fingertip at longer camera distances.
+
+Five guided hand presses learn the accepted contact gap and contact-patch area.
+Approach samples farther than `60 mm` are excluded. A matching patch must remain
+spatially consistent for three frames before it becomes a cursor. MediaPipe is
+not used in this mode. The depth foreground defaults are:
 
 ```bash
 ./run_wall_touch_demo.sh \
   --touch-max-gap-mm 30 --depth-noise-multiplier 0.75
 ```
 
-Lower `--touch-max-gap-mm` to reject hovering more strictly. Raise it if real
-touches are missed, but raising it can also admit depth noise. Moving the depth
-camera closer to the wall is preferable when possible. The debug window reports
-the live wall gap.
+Lower `--depth-calibration-max-gap-mm` to reject hovering more strictly. Raise
+it only if real palm presses are missed, because a larger value also admits
+hovering. The tracker is geometric rather than semantic, so another object
+pressed against the wall can also activate it. Moving the depth camera closer
+to the wall is preferable when possible. The debug window reports the live
+wall gap.
 
 ### RGB fallback
 
@@ -172,8 +180,9 @@ important than touch continuity.
 - OpenCV computes a planar homography from the four camera clicks to known
   projector pixels.
 - Orbbec hardware D2C provides synchronized aligned color and depth.
-- Per-pixel background subtraction, temporal filtering, and connected
-  components locate depth contact without RGB landmarks.
+- Per-pixel background subtraction, temporal filtering, connected components,
+  and near-wall contact-patch centroids locate an open-hand press without RGB
+  landmarks.
 - MediaPipe provides fingertip landmarks only for RGB fallback, which uses
   palm size in mapped projector coordinates.
 - A short dwell rejects fly-by motion, then dragging paints continuously.
