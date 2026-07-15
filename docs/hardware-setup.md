@@ -1,13 +1,13 @@
-# External-Camera Wall Touch Demo
+# Orbbec RGB-D Wall Touch Demo
 
-This demo supports standard external V4L2 cameras. It discovers the primary
-image stream automatically, prefers stable device paths, and explicitly
-refuses the known Shinetech PC webcam.
+The preferred sensor is an Orbbec Gemini 336/335-series RGB-D camera. The app
+uses synchronized hardware depth-to-color alignment and retains standard
+external V4L2 cameras as a fallback.
 
 ## Camera placement
 
 1. Put the projector in its final position facing the wall.
-2. Put the external camera near the projector, preferably within 20-50 cm of
+2. Put the Orbbec near the projector, preferably within 20-50 cm of
    the projector lens.
 3. Aim the camera at the center of the projected rectangle.
 4. Make sure the camera sees the entire rectangle with some wall around every
@@ -31,10 +31,29 @@ Run:
 ./run_wall_touch_demo.sh --fresh
 ```
 
-To choose a camera explicitly or override automatic selection:
+Before the first Orbbec run:
 
 ```bash
-./run_wall_touch_demo.sh --camera /dev/video4 --fresh
+./install.sh
+./scripts/install_orbbec_udev.sh
+# Unplug and reconnect the camera, then verify Gemini 336 PID 0803:
+lsusb | grep 2bc5:0803
+```
+
+Use the supplied USB 3 data cable when possible. USB 3 is preferred, but the
+app also detects USB 2.1 and automatically selects the tested bandwidth-safe
+hardware-aligned `640x480/15 FPS` profile.
+
+To force Orbbec depth:
+
+```bash
+./run_wall_touch_demo.sh --sensor orbbec --fresh
+```
+
+To force RGB fallback and choose a camera explicitly:
+
+```bash
+./run_wall_touch_demo.sh --sensor rgb --camera /dev/video4 --fresh
 # Or persist the selection for future launches:
 WALL_TOUCH_CAMERA=/dev/video4 ./run_wall_touch_demo.sh --fresh
 ```
@@ -57,13 +76,11 @@ For a different projector layout, provide its resolution and desktop origin:
 1. The projector shows four numbered crosshairs.
 2. In the camera window on the laptop, click their centers in order:
    top-left, top-right, bottom-right, bottom-left.
-3. A target appears at the center of the projected area.
-4. Put your index fingertip physically on that target, using the same pointing
-   posture you will use while painting.
-5. Keep the fingertip there while the green outer ring fills. Sampling starts
-   automatically after geometric calibration.
-6. Touch and drag within the projected area to mix paint. Use `t` only when you
-   intentionally want to relearn the touch distance later.
+3. Keep people and objects out of the projected area while the green depth
+   calibration ring fills for 12 frames.
+4. Touch and drag within the projected area. The app measures the fingertip's
+   millimeter gap from the fitted wall plane.
+5. Press `t` only when intentionally relearning the empty wall depth.
 
 The projection may occupy a small part of the full camera frame. After the four
 clicks, the hand detector automatically crops around that region. Calibration
@@ -75,7 +92,7 @@ accepts a projected quadrilateral covering at least 1.25% of the camera frame.
 - `[`: select the previous reactive mode
 - `1`-`6`: select any mode directly
 - `c`: clear all artwork while keeping the current calibration
-- `t`: relearn the touch-plane hand size
+- `t`: relearn wall depth in Orbbec mode or hand size in RGB fallback
 - `r`: clear artwork and discard calibration so you can choose new projection points
 - `f`: toggle projector fullscreen
 - `q` or `Esc`: quit
@@ -104,6 +121,21 @@ to reuse it only when the camera, projector, wall, and display layout have not
 moved.
 
 ## What counts as touch
+
+In Orbbec mode, the empty wall is fitted as a perspective-correct reciprocal
+depth plane. MediaPipe locates the index fingertip in aligned RGB; a robust
+depth patch just inside the fingertip is compared with the expected wall depth
+at that pixel. The default contact range is `-15` to `45 mm`:
+
+```bash
+./run_wall_touch_demo.sh --touch-min-gap-mm -10 --touch-max-gap-mm 35
+```
+
+Lower `--touch-max-gap-mm` to reject hovering more strictly. Raise it if real
+touches are missed because the sampled finger surface sits in front of the
+wall. The debug window reports the live wall gap.
+
+### RGB fallback
 
 One normal camera cannot measure absolute depth. This demo learns the apparent
 hand size while your finger is touching the wall. A hand closer to the camera
@@ -134,11 +166,13 @@ important than touch continuity.
 - OpenCV computes a planar homography from the four camera clicks to known
   projector pixels.
 - The fingertip is mapped through that homography.
-- Palm size in mapped projector coordinates estimates whether the hand is at
-  the calibrated wall plane.
+- Orbbec hardware D2C aligns depth measurements to RGB fingertip pixels.
+- A robust reciprocal-depth plane models the empty wall.
+- RGB fallback uses palm size in mapped projector coordinates.
 - A short dwell rejects fly-by motion, then dragging paints continuously.
 
 Primary references:
 
 - https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/python
 - https://docs.opencv.org/master/d9/dab/tutorial_homography.html
+- https://github.com/orbbec/pyorbbecsdk

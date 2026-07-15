@@ -138,6 +138,217 @@ class TouchDecision:
     candidate: bool
     ratio: float | None
     reason: str
+    distance_mm: float | None = None
+
+
+@dataclass(frozen=True)
+class WallDepthModel:
+    coefficients: np.ndarray
+    rmse_mm: float
+    sample_count: int
+
+    def expected_depth(self, point: np.ndarray, frame_size: tuple[int, int]) -> float:
+        width, height = frame_size
+        x, y = np.asarray(point, dtype=np.float64)
+        normalized = np.array(
+            [(x - (width - 1) * 0.5) / width, (y - (height - 1) * 0.5) / height, 1.0]
+        )
+        inverse_depth = float(normalized @ np.asarray(self.coefficients, dtype=np.float64))
+        return 1.0 / inverse_depth if inverse_depth > 0 else float("nan")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "coefficients": np.asarray(self.coefficients, dtype=float).tolist(),
+            "rmse_mm": float(self.rmse_mm),
+            "sample_count": int(self.sample_count),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "WallDepthModel":
+        coefficients = np.asarray(data["coefficients"], dtype=np.float64)
+        if coefficients.shape != (3,) or not np.isfinite(coefficients).all():
+            raise ValueError("Invalid wall depth coefficients")
+        return cls(coefficients, float(data["rmse_mm"]), int(data["sample_count"]))
+
+
+def fit_wall_depth_model(
+    depth_mm: np.ndarray,
+    camera_points: np.ndarray,
+    minimum_depth_mm: float = 150.0,
+    maximum_depth_mm: float = 10_000.0,
+    sample_step: int = 4,
+) -> WallDepthModel:
+    depth = np.asarray(depth_mm, dtype=np.float32)
+    if depth.ndim != 2:
+        raise ValueError("Depth frame must be a 2D array")
+    points = np.asarray(camera_points, dtype=np.float32)
+    if points.shape != (4, 2):
+        raise ValueError("Expected four projection corners")
+
+    height, width = depth.shape
+    mask = np.zeros((height, width), dtype=np.uint8)
+    cv2.fillConvexPoly(mask, np.rint(points).astype(np.int32), 1)
+    yy, xx = np.mgrid[0:height:sample_step, 0:width:sample_step]
+    values = depth[::sample_step, ::sample_step]
+    valid = (
+        (mask[::sample_step, ::sample_step] > 0)
+        & np.isfinite(values)
+        & (values >= minimum_depth_mm)
+        & (values <= maximum_depth_mm)
+    )
+    if np.count_nonzero(valid) < 120:
+        raise ValueError("Not enough valid wall depth pixels")
+
+    x = (xx[valid].astype(np.float64) - (width - 1) * 0.5) / width
+    y = (yy[valid].astype(np.float64) - (height - 1) * 0.5) / height
+    measured = values[valid].astype(np.float64)
+    design = np.column_stack((x, y, np.ones_like(x)))
+    inliers = np.ones(len(measured), dtype=bool)
+    coefficients = np.zeros(3, dtype=np.float64)
+    for _ in range(4):
+        coefficients = np.linalg.lstsq(
+            design[inliers], 1.0 / measured[inliers], rcond=None
+        )[0]
+        inverse = design @ coefficients
+        predicted = np.divide(
+            1.0,
+            inverse,
+            out=np.full_like(inverse, np.nan),
+            where=inverse > 0,
+        )
+        residual = measured - predicted
+        finite = np.isfinite(residual)
+        median = float(np.median(residual[finite]))
+        mad = float(np.median(np.abs(residual[finite] - median)))
+        threshold = min(60.0, max(12.0, 3.5 * 1.4826 * mad))
+        next_inliers = finite & (np.abs(residual - median) <= threshold)
+        if np.count_nonzero(next_inliers) < 120:
+            break
+        inliers = next_inliers
+
+    coefficients = np.linalg.lstsq(
+        design[inliers], 1.0 / measured[inliers], rcond=None
+    )[0]
+    predicted = 1.0 / (design[inliers] @ coefficients)
+    rmse = float(np.sqrt(np.mean((measured[inliers] - predicted) ** 2)))
+    return WallDepthModel(coefficients, rmse, int(np.count_nonzero(inliers)))
+
+
+def combine_wall_depth_models(models: list[WallDepthModel]) -> WallDepthModel:
+    if not models:
+        raise ValueError("No wall depth models were collected")
+    coefficients = np.median(
+        np.stack([np.asarray(model.coefficients) for model in models]), axis=0
+    )
+    return WallDepthModel(
+        coefficients=coefficients,
+        rmse_mm=float(np.median([model.rmse_mm for model in models])),
+        sample_count=int(sum(model.sample_count for model in models)),
+    )
+
+
+def sample_fingertip_depth(
+    depth_mm: np.ndarray,
+    point: np.ndarray,
+    radius: int = 7,
+    percentile: float = 25.0,
+) -> float | None:
+    depth = np.asarray(depth_mm, dtype=np.float32)
+    if depth.ndim != 2:
+        return None
+    x, y = np.rint(np.asarray(point, dtype=float)).astype(int)
+    height, width = depth.shape
+    x0, x1 = max(0, x - radius), min(width, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(height, y + radius + 1)
+    values = depth[y0:y1, x0:x1]
+    valid = values[np.isfinite(values) & (values >= 100) & (values <= 10_000)]
+    if valid.size < max(4, radius):
+        return None
+    return float(np.percentile(valid, percentile))
+
+
+class DepthTouchGate:
+    def __init__(
+        self,
+        minimum_gap_mm: float = -15.0,
+        maximum_gap_mm: float = 45.0,
+        dwell_seconds: float = 0.05,
+        maximum_dwell_motion: float = 70.0,
+        tracking_grace_seconds: float = 0.22,
+    ) -> None:
+        self.minimum_gap_mm = minimum_gap_mm
+        self.maximum_gap_mm = maximum_gap_mm
+        self.dwell_seconds = dwell_seconds
+        self.maximum_dwell_motion = maximum_dwell_motion
+        self.tracking_grace_seconds = tracking_grace_seconds
+        self._candidate_since: float | None = None
+        self._candidate_origin: np.ndarray | None = None
+        self._last_valid_time: float | None = None
+        self._active = False
+
+    def reset(self) -> None:
+        self._candidate_since = None
+        self._candidate_origin = None
+        self._last_valid_time = None
+        self._active = False
+
+    def update(
+        self,
+        *,
+        gap_mm: float | None,
+        point: np.ndarray | None,
+        timestamp: float,
+        inside: bool,
+        index_extended: bool,
+        calibrated: bool = True,
+    ) -> TouchDecision:
+        if not calibrated:
+            self.reset()
+            return TouchDecision(False, False, None, "calibrate wall depth")
+        if gap_mm is None or point is None:
+            return self._temporary_loss(timestamp, gap_mm, "depth unavailable")
+        if not inside:
+            self.reset()
+            return TouchDecision(False, False, None, "outside projection", gap_mm)
+        if not index_extended:
+            return self._temporary_loss(timestamp, gap_mm, "finger pose uncertain")
+        if gap_mm > self.maximum_gap_mm:
+            return self._temporary_loss(timestamp, gap_mm, "finger above wall")
+        if gap_mm < self.minimum_gap_mm:
+            return self._temporary_loss(timestamp, gap_mm, "depth behind wall")
+
+        point = np.asarray(point, dtype=np.float32)
+        self._last_valid_time = timestamp
+        if self._active:
+            return TouchDecision(True, True, None, "touch", gap_mm)
+        if self._candidate_since is None:
+            self._candidate_since = timestamp
+            self._candidate_origin = point.copy()
+            return TouchDecision(False, True, None, "hold briefly", gap_mm)
+        if float(np.linalg.norm(point - self._candidate_origin)) > self.maximum_dwell_motion:
+            self._candidate_since = timestamp
+            self._candidate_origin = point.copy()
+            return TouchDecision(False, True, None, "steady fingertip", gap_mm)
+        if timestamp - self._candidate_since >= self.dwell_seconds:
+            self._active = True
+            return TouchDecision(True, True, None, "touch", gap_mm)
+        return TouchDecision(False, True, None, "hold briefly", gap_mm)
+
+    def _temporary_loss(
+        self,
+        timestamp: float,
+        gap_mm: float | None,
+        reason: str,
+    ) -> TouchDecision:
+        has_progress = self._active or self._candidate_since is not None
+        within_grace = (
+            self._last_valid_time is not None
+            and timestamp - self._last_valid_time <= self.tracking_grace_seconds
+        )
+        if has_progress and within_grace:
+            return TouchDecision(False, True, None, reason, gap_mm)
+        self.reset()
+        return TouchDecision(False, False, None, reason, gap_mm)
 
 
 class TouchGate:

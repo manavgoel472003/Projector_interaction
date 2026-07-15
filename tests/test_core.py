@@ -3,12 +3,17 @@ import unittest
 import numpy as np
 
 from wall_touch_core import (
+    DepthTouchGate,
     TouchGate,
+    WallDepthModel,
     build_homography,
     camera_detection_roi,
+    combine_wall_depth_models,
+    fit_wall_depth_model,
     hand_plane_scale,
     point_in_output,
     projection_near_frame_edge,
+    sample_fingertip_depth,
     transform_points,
     validate_camera_quad,
 )
@@ -125,6 +130,71 @@ class TouchGateTests(unittest.TestCase):
         self.assertFalse(lost.active)
         self.assertTrue(lost.candidate)
         self.assertTrue(resumed.active)
+
+
+class DepthTouchTests(unittest.TestCase):
+    def test_reciprocal_depth_plane_fits_slanted_wall_with_outliers(self):
+        width, height = 320, 200
+        yy, xx = np.mgrid[:height, :width]
+        inverse = (
+            0.00082
+            + 0.00011 * ((xx - 159.5) / width)
+            - 0.00007 * ((yy - 99.5) / height)
+        )
+        depth = (1.0 / inverse).astype(np.float32)
+        depth[80:105, 130:165] = 650
+        depth[::17, ::13] = 0
+        quad = np.array([[20, 15], [300, 18], [295, 185], [24, 181]], np.float32)
+
+        model = fit_wall_depth_model(depth, quad)
+
+        self.assertLess(model.rmse_mm, 1.0)
+        expected = float(1.0 / inverse[120, 240])
+        actual = model.expected_depth(np.array([240, 120]), (width, height))
+        self.assertAlmostEqual(actual, expected, delta=2.0)
+
+    def test_wall_model_round_trips_and_combines(self):
+        first = WallDepthModel(np.array([0.1, 0.2, 0.001]), 3.0, 100)
+        second = WallDepthModel(np.array([0.2, 0.3, 0.0012]), 5.0, 120)
+        restored = WallDepthModel.from_dict(first.to_dict())
+        combined = combine_wall_depth_models([first, second])
+        np.testing.assert_allclose(restored.coefficients, first.coefficients)
+        np.testing.assert_allclose(combined.coefficients, [0.15, 0.25, 0.0011])
+        self.assertEqual(combined.sample_count, 220)
+
+    def test_fingertip_depth_prefers_foreground_in_patch(self):
+        depth = np.full((80, 100), 1200, np.float32)
+        depth[36:45, 46:55] = 1168
+        sampled = sample_fingertip_depth(depth, np.array([50, 40]), radius=7)
+        self.assertAlmostEqual(sampled, 1168, delta=1)
+
+    def test_depth_gate_rejects_hover_and_accepts_contact(self):
+        gate = DepthTouchGate(maximum_gap_mm=45, dwell_seconds=0.05)
+        hover = gate.update(
+            gap_mm=90,
+            point=np.array([400, 300]),
+            timestamp=1.0,
+            inside=True,
+            index_extended=True,
+        )
+        first = gate.update(
+            gap_mm=24,
+            point=np.array([400, 300]),
+            timestamp=1.1,
+            inside=True,
+            index_extended=True,
+        )
+        contact = gate.update(
+            gap_mm=22,
+            point=np.array([402, 301]),
+            timestamp=1.16,
+            inside=True,
+            index_extended=True,
+        )
+        self.assertEqual(hover.reason, "finger above wall")
+        self.assertFalse(first.active)
+        self.assertTrue(contact.active)
+        self.assertEqual(contact.distance_mm, 22)
 
 
 if __name__ == "__main__":

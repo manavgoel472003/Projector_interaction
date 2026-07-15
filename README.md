@@ -1,12 +1,13 @@
 # Projector Interaction
 
-Turn a projector and one external RGB camera into an interactive wall. The
+Turn a projector and an Orbbec RGB-D camera into an interactive wall. The
 camera maps a fingertip into projector coordinates with a four-point
-homography. A learned apparent-hand-size threshold provides approximate touch
-detection without a depth sensor.
+homography, while aligned depth measures its distance from the calibrated wall
+plane in millimeters. A standard external RGB camera remains available as a
+fallback.
 
-The application never selects a PC webcam by numeric camera index. It requires
-an explicit external V4L2 device path and rejects known built-in webcam names.
+The application prefers a connected Orbbec automatically. It never selects the
+known PC webcam as its RGB fallback.
 
 ## Modes
 
@@ -17,15 +18,16 @@ an explicit external V4L2 device path and rejects known built-in webcam names.
 - `constellation`: fading stars connected by fine luminous lines
 - `sand`: metallic grains attracted into touch-driven vortices
 
-`spill` is the default. The tested touch defaults are a scale range of
-`0.50-1.60` with a `50 ms` dwell.
+`spill` is the default. Depth contact accepts a fingertip from `-15 mm` behind
+the fitted wall through `45 mm` in front, with a `50 ms` dwell.
 
 ## Requirements
 
-- Linux with Video4Linux2
+- Linux with Video4Linux2; USB 3 recommended
 - Python 3.10 or newer
 - Projector configured as a display
-- External RGB camera that can see the complete projected rectangle
+- Orbbec Gemini RGB-D camera, preferably Gemini 336/335 series
+- Optional external RGB camera fallback
 
 ## Quick Start
 
@@ -33,12 +35,29 @@ an explicit external V4L2 device path and rejects known built-in webcam names.
 git clone https://github.com/manavgoel472003/Projector_interaction.git
 cd Projector_interaction
 ./install.sh
+./scripts/install_orbbec_udev.sh
+# Unplug and reconnect the Orbbec after installing its USB rule.
 ./run_wall_touch_demo.sh --fresh
 ```
 
 `install.sh` creates `.venv`, installs pinned runtime dependencies, downloads
 the official MediaPipe Hand Landmarker model, verifies its SHA-256 checksum,
-and runs the tests.
+and runs the tests. The udev command installs Orbbec's official Linux USB
+permissions and requires your sudo password once.
+
+With the Gemini connected, `--sensor auto` selects synchronized, hardware
+aligned color and depth. Force it when diagnosing setup:
+
+```bash
+./run_wall_touch_demo.sh --sensor orbbec --fresh
+```
+
+The Gemini must appear in `lsusb`; Gemini 336 reports `2bc5:0803`. If it does
+not, reconnect it with the supplied USB 3 data cable before debugging software.
+On USB 2.1, the app automatically selects the tested bandwidth-safe hardware
+alignment profile at `640x480/15 FPS`; USB 3 permits higher-bandwidth profiles.
+
+### RGB fallback
 
 The launcher automatically discovers the primary video stream of a connected
 external V4L2 camera. It prefers stable `/dev/v4l/by-id` paths, so replacing a
@@ -47,6 +66,7 @@ connected, select one explicitly:
 
 ```bash
 ./run_wall_touch_demo.sh \
+  --sensor rgb \
   --camera /dev/v4l/by-id/<external-camera>-video-index0 \
   --fresh
 ```
@@ -70,9 +90,9 @@ Format and stream settings can be overridden when testing other hardware:
 1. Fix the projector and camera in place.
 2. Click the four projected targets in the laptop debug window in this order:
    top-left, top-right, bottom-right, bottom-left.
-3. Walk to the wall and hold your index fingertip on the projected center
-   target while the touch samples are collected.
-4. Touch and drag inside the projected region.
+3. Keep the projected area empty while 12 wall-depth frames are collected.
+4. Touch and drag inside the projected region. No fingertip depth calibration
+   target is needed.
 
 Calibration is stored locally in `wall_touch_calibration.json` and is ignored
 by Git. Use `--fresh` or press `r` after moving the camera, projector, or wall.
@@ -87,7 +107,7 @@ details.
 | `]` / `m` | Next mode |
 | `[` | Previous mode |
 | `c` | Clear artwork and keep calibration |
-| `t` | Relearn the touch plane |
+| `t` | Relearn wall depth (or RGB touch scale in fallback mode) |
 | `r` | Clear artwork and choose new projection points |
 | `f` | Toggle projector fullscreen |
 | `q` / `Esc` | Quit |
@@ -104,7 +124,8 @@ Repository layout:
 
 ```text
 wall_touch_paint.py    camera, calibration, interaction loop
-wall_touch_core.py     geometry and touch gate
+wall_touch_orbbec.py  synchronized Orbbec RGB-D capture
+wall_touch_core.py     geometry, wall plane, and touch gates
 wall_touch_effects.py  original visual simulations
 wall_touch_ambient_effects.py  ambient and field simulations
 tests/                 deterministic unit tests
@@ -114,10 +135,10 @@ docs/                  hardware and calibration notes
 
 ## Limitations
 
-A monocular RGB camera estimates wall contact from apparent hand size. It can
-reject obvious near-camera motion, but cannot reliably distinguish a fingertip
-touching the wall from one hovering a few centimeters above it. Precise contact
-detection requires a side camera, depth camera, or optical touch plane.
+Depth accuracy is limited at fingertip silhouettes and by reflective or
+transparent walls. The app samples a patch just inside the fingertip and uses a
+robust wall plane, but `--touch-max-gap-mm` may need adjustment for camera
+placement and pointing posture. RGB fallback still uses approximate hand size.
 
 No software license has been selected for this repository yet. Add one before
 publishing if others should be allowed to copy, modify, or redistribute it.

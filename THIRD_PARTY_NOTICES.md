@@ -5,6 +5,7 @@ This project installs the following Python packages from PyPI:
 - MediaPipe: https://github.com/google-ai-edge/mediapipe
 - OpenCV: https://github.com/opencv/opencv
 - NumPy: https://github.com/numpy/numpy
+- Orbbec Python SDK v2: https://github.com/orbbec/pyorbbecsdk
 
 The setup script downloads the MediaPipe Hand Landmarker model from Google's
 versioned model storage URL:

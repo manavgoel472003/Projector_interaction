@@ -22,3 +22,4 @@ PYTHON="$ROOT/.venv/bin/python" "$ROOT/scripts/download_hand_model.sh"
 )
 
 printf '\nSetup complete. Run:\n  %s/run_wall_touch_demo.sh --fresh\n' "$ROOT"
+printf 'For an Orbbec camera, install its Linux USB rule once:\n  %s/scripts/install_orbbec_udev.sh\n' "$ROOT"

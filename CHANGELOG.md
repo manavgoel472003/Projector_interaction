@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.0
+
+- Add synchronized Orbbec Gemini RGB-D capture through the official
+  `pyorbbecsdk2` package with hardware depth-to-color alignment.
+- Fit an empty-wall reciprocal-depth plane and classify touch from the measured
+  fingertip-to-wall gap in millimeters.
+- Prefer Orbbec automatically while retaining the external RGB fallback.
+- Match color/depth frame rates and cap USB 2.1 links at the tested
+  hardware-aligned `640x480/15 FPS` profile.
+- Add robust depth patch sampling, wall-depth persistence, depth recalibration,
+  Linux udev setup, and deterministic depth tests.
+
 ## 2.7.1
 
 - Avoid the repeated libjpeg corruption warnings produced by Logitech
