@@ -209,6 +209,54 @@ class TicTacToe:
                         emphasis,
                     )
 
+        boundary_color = (226, 226, 234)
+        boundary_glow = (112, 128, 150)
+        glow_width = max(9, self.cell_size // 18)
+        line_width = max(3, self.cell_size // 70)
+        for index in (1, 2):
+            x = self.board_left + index * self.cell_size
+            y = self.board_top + index * self.cell_size
+            cv2.line(
+                glow,
+                (x, self.board_top),
+                (x, self.board_bottom),
+                boundary_glow,
+                glow_width,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                glow,
+                (self.board_left, y),
+                (self.board_right, y),
+                boundary_glow,
+                glow_width,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                frame,
+                (x, self.board_top),
+                (x, self.board_bottom),
+                boundary_color,
+                line_width,
+                cv2.LINE_AA,
+            )
+            cv2.line(
+                frame,
+                (self.board_left, y),
+                (self.board_right, y),
+                boundary_color,
+                line_width,
+                cv2.LINE_AA,
+            )
+        cv2.rectangle(
+            frame,
+            (self.board_left, self.board_top),
+            (self.board_right, self.board_bottom),
+            (178, 180, 190),
+            max(2, line_width - 1),
+            cv2.LINE_AA,
+        )
+
     def _draw_mark(
         self,
         frame: np.ndarray,

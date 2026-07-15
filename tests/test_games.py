@@ -50,6 +50,9 @@ class TicTacToeTests(unittest.TestCase):
         frame = self.game.render(4.3)
         self.assertEqual(frame.shape, (700, 900, 3))
         self.assertGreater(float(frame.std()), 5.0)
+        divider_x = self.game.board_left + self.game.cell_size
+        divider_y = self.game.board_top + self.game.cell_size // 2
+        self.assertGreater(float(frame[divider_y, divider_x].mean()), 180.0)
 
 
 if __name__ == "__main__":

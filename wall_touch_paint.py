@@ -49,7 +49,7 @@ from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "3.4"
+APP_VERSION = "3.4.1"
 DEPTH_TOUCH_MODE = "hand-contact-v1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"

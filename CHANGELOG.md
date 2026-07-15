@@ -1,5 +1,10 @@
 # Changelog
 
+## 3.4.1
+
+- Add bright neutral dividers, a light outer boundary, and restrained glow to
+  keep every Tic Tac Toe cell visible on the projected wall.
+
 ## 3.4.0
 
 - Add a two-player Tic Tac Toe mode with large projected touch cells,
