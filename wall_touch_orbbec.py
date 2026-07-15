@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 
 import cv2
 import numpy as np
@@ -89,6 +90,7 @@ class OrbbecCamera:
             print(f"Orbbec frame-sync warning: {error}")
         self.pipeline.start(self.config)
         self.closed = False
+        self.has_received_frame = False
 
     def _hardware_d2c_config(
         self,
@@ -149,7 +151,20 @@ class OrbbecCamera:
             if frames is not None:
                 break
         if frames is None:
-            raise RuntimeError("Orbbec camera did not return synchronized frames")
+            if not self.has_received_frame:
+                self.pipeline.stop()
+                time.sleep(3.0)
+                self.pipeline.start(self.config)
+                try:
+                    self.pipeline.enable_frame_sync()
+                except Exception:
+                    pass
+                for _ in range(2):
+                    frames = self.pipeline.wait_for_frames(timeout_ms)
+                    if frames is not None:
+                        break
+            if frames is None:
+                raise RuntimeError("Orbbec camera did not return synchronized frames")
         color_frame = frames.get_color_frame()
         depth_frame = frames.get_depth_frame()
         if color_frame is None or depth_frame is None:
@@ -162,6 +177,7 @@ class OrbbecCamera:
                 (color.shape[1], color.shape[0]),
                 interpolation=cv2.INTER_NEAREST,
             )
+        self.has_received_frame = True
         return RGBDFrame(color, depth)
 
     def release(self) -> None:

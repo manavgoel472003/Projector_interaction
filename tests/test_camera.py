@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from wall_touch_core import WallDepthModel
+from wall_touch_core import DepthTouchProfile, WallDepthModel
 from wall_touch_paint import camera_stream_profile, depth_reference_path, validate_camera
 from wall_touch_paint import load_calibration, save_calibration
 
@@ -50,6 +50,7 @@ class CameraSelectionTests(unittest.TestCase):
         model = WallDepthModel(np.array([0.0001, -0.0002, 0.001]), 4.2, 800)
         reference = np.full((200, 320), 1234.0, np.float32)
         noise = np.full((200, 320), 8.0, np.float32)
+        profile = DepthTouchProfile(12.0, 42.0, 300, 2500, 50)
         with TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.json"
             save_calibration(
@@ -64,6 +65,7 @@ class CameraSelectionTests(unittest.TestCase):
                 "orbbec-depth",
                 reference,
                 noise,
+                profile,
             )
             loaded = load_calibration(
                 path,
@@ -85,6 +87,7 @@ class CameraSelectionTests(unittest.TestCase):
         np.testing.assert_allclose(loaded["wall_depth_model"].coefficients, model.coefficients)
         np.testing.assert_allclose(loaded["wall_depth_reference"], reference)
         np.testing.assert_allclose(loaded["wall_depth_noise"], noise)
+        self.assertEqual(loaded["depth_touch_profile"], profile)
         self.assertIsNone(rejected)
 
 

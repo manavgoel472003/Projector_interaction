@@ -179,6 +179,162 @@ class DepthContactObservation:
     component_area: int
 
 
+@dataclass(frozen=True)
+class DepthTouchProfile:
+    minimum_gap_mm: float
+    maximum_gap_mm: float
+    minimum_component_area: int
+    maximum_component_area: int
+    sample_count: int
+
+    @classmethod
+    def fit(cls, samples: list[DepthContactObservation]) -> "DepthTouchProfile":
+        if len(samples) < 12:
+            raise ValueError("Not enough guided touch samples")
+        gaps = np.asarray([sample.gap_mm for sample in samples], dtype=np.float32)
+        areas = np.asarray([sample.component_area for sample in samples], dtype=np.float32)
+        return cls(
+            minimum_gap_mm=max(5.0, float(np.percentile(gaps, 5)) - 10.0),
+            maximum_gap_mm=float(np.percentile(gaps, 95)) + 10.0,
+            minimum_component_area=max(60, int(np.percentile(areas, 10) * 0.45)),
+            maximum_component_area=max(200, int(np.percentile(areas, 90) * 2.5)),
+            sample_count=len(samples),
+        )
+
+    def accepts(self, observation: DepthContactObservation) -> bool:
+        return bool(
+            self.minimum_gap_mm <= observation.gap_mm <= self.maximum_gap_mm
+            and self.minimum_component_area
+            <= observation.component_area
+            <= self.maximum_component_area
+        )
+
+    def to_dict(self) -> dict[str, float | int]:
+        return {
+            "minimum_gap_mm": self.minimum_gap_mm,
+            "maximum_gap_mm": self.maximum_gap_mm,
+            "minimum_component_area": self.minimum_component_area,
+            "maximum_component_area": self.maximum_component_area,
+            "sample_count": self.sample_count,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, object]) -> "DepthTouchProfile":
+        profile = cls(
+            minimum_gap_mm=float(data["minimum_gap_mm"]),
+            maximum_gap_mm=float(data["maximum_gap_mm"]),
+            minimum_component_area=int(data["minimum_component_area"]),
+            maximum_component_area=int(data["maximum_component_area"]),
+            sample_count=int(data["sample_count"]),
+        )
+        if (
+            profile.minimum_gap_mm < 0
+            or profile.maximum_gap_mm <= profile.minimum_gap_mm
+            or profile.minimum_component_area <= 0
+            or profile.maximum_component_area <= profile.minimum_component_area
+        ):
+            raise ValueError("Invalid depth touch profile")
+        return profile
+
+
+class DepthContactLock:
+    def __init__(
+        self,
+        profile: DepthTouchProfile,
+        acquisition_frames: int = 3,
+        maximum_motion_pixels: float = 18.0,
+        loss_grace_frames: int = 2,
+    ) -> None:
+        self.profile = profile
+        self.acquisition_frames = max(1, int(acquisition_frames))
+        self.maximum_motion_pixels = float(maximum_motion_pixels)
+        self.loss_grace_frames = max(0, int(loss_grace_frames))
+        self.reset()
+
+    def reset(self) -> None:
+        self._point: np.ndarray | None = None
+        self._consecutive = 0
+        self._missing = 0
+
+    def update(
+        self, observations: list[DepthContactObservation]
+    ) -> DepthContactObservation | None:
+        accepted = [item for item in observations if self.profile.accepts(item)]
+        if not accepted:
+            self._missing += 1
+            if self._missing > self.loss_grace_frames:
+                self.reset()
+            return None
+
+        if self._point is None:
+            selected = max(accepted, key=lambda item: item.component_area)
+            self._point = selected.camera_point.copy()
+            self._consecutive = 1
+        else:
+            selected = min(
+                accepted,
+                key=lambda item: float(np.linalg.norm(item.camera_point - self._point)),
+            )
+            motion = float(np.linalg.norm(selected.camera_point - self._point))
+            if motion > self.maximum_motion_pixels:
+                self._point = selected.camera_point.copy()
+                self._consecutive = 1
+            else:
+                self._point = 0.45 * self._point + 0.55 * selected.camera_point
+                self._consecutive += 1
+        self._missing = 0
+        if self._consecutive < self.acquisition_frames:
+            return None
+        return DepthContactObservation(
+            self._point.copy(), selected.gap_mm, selected.component_area
+        )
+
+
+def depth_target_has_foreground(
+    wall_depth_mm: np.ndarray,
+    current_depth_mm: np.ndarray,
+    wall_noise_mm: np.ndarray,
+    target: np.ndarray,
+    radius: int = 28,
+) -> bool:
+    present, _, _, _ = depth_target_foreground_metrics(
+        wall_depth_mm, current_depth_mm, wall_noise_mm, target, radius
+    )
+    return present
+
+
+def depth_target_foreground_metrics(
+    wall_depth_mm: np.ndarray,
+    current_depth_mm: np.ndarray,
+    wall_noise_mm: np.ndarray,
+    target: np.ndarray,
+    radius: int = 28,
+) -> tuple[bool, float, int, int]:
+    reference = np.asarray(wall_depth_mm, dtype=np.float32)
+    current = np.asarray(current_depth_mm, dtype=np.float32)
+    noise = np.asarray(wall_noise_mm, dtype=np.float32)
+    if reference.shape != current.shape or reference.shape != noise.shape:
+        return False, 0.0, 0, 0
+    x, y = np.rint(np.asarray(target, dtype=np.float32)).astype(int)
+    height, width = reference.shape
+    x0, x1 = max(0, x - radius), min(width, x + radius + 1)
+    y0, y1 = max(0, y - radius), min(height, y + radius + 1)
+    yy, xx = np.ogrid[y0:y1, x0:x1]
+    circle = (xx - x) ** 2 + (yy - y) ** 2 <= radius**2
+    ref_patch = reference[y0:y1, x0:x1]
+    current_patch = current[y0:y1, x0:x1]
+    noise_patch = noise[y0:y1, x0:x1]
+    valid = circle & (ref_patch >= 100) & (current_patch >= 100)
+    valid_count = int(np.count_nonzero(valid))
+    if valid_count < 40:
+        return False, 0.0, 0, valid_count
+    gap = ref_patch - current_patch
+    strong_threshold = np.maximum(55.0, 1.35 * noise_patch + 12.0)
+    strong_count = int(np.count_nonzero(valid & (gap >= strong_threshold)))
+    gap_p90 = float(np.percentile(gap[valid], 90))
+    return strong_count >= 18, gap_p90, strong_count, valid_count
+
+
 class DepthContactTracker:
     """Locate the part of a foreground depth component nearest the wall."""
 
@@ -227,17 +383,19 @@ class DepthContactTracker:
         )
         self._open_kernel = np.ones((3, 3), dtype=np.uint8)
         self._close_kernel = np.ones((5, 5), dtype=np.uint8)
+        self.current_depth_mm: np.ndarray | None = None
 
-    def detect(self, depth_mm: np.ndarray) -> DepthContactObservation | None:
+    def observations(self, depth_mm: np.ndarray) -> list[DepthContactObservation]:
         depth = np.asarray(depth_mm, dtype=np.float32)
         if depth.shape != self.wall_depth_mm.shape:
-            return None
+            return []
 
         self._history.append(depth.copy())
         history = np.stack(self._history)
         current = np.ma.median(
             np.ma.masked_less(history, 100.0), axis=0
         ).filled(0.0).astype(np.float32)
+        self.current_depth_mm = current
 
         reference = self.wall_depth_mm
         valid = (
@@ -267,7 +425,7 @@ class DepthContactTracker:
         count, labels, stats, _ = cv2.connectedComponentsWithStats(
             foreground, connectivity=8
         )
-        candidates: list[tuple[bool, int, float, DepthContactObservation]] = []
+        observations: list[DepthContactObservation] = []
         for label in range(1, count):
             area = int(stats[label, cv2.CC_STAT_AREA])
             if area < self.minimum_component_area:
@@ -291,18 +449,22 @@ class DepthContactTracker:
                 dtype=np.float32,
             )
             observation = DepthContactObservation(point, near_percentile, area)
-            candidates.append(
-                (
-                    near_percentile > self.near_wall_limit_mm,
-                    -area,
-                    near_percentile,
-                    observation,
-                )
-            )
+            observations.append(observation)
 
-        if not candidates:
+        return observations
+
+    def detect(self, depth_mm: np.ndarray) -> DepthContactObservation | None:
+        observations = self.observations(depth_mm)
+        if not observations:
             return None
-        return min(candidates, key=lambda item: item[:3])[3]
+        return min(
+            observations,
+            key=lambda item: (
+                item.gap_mm > self.near_wall_limit_mm,
+                -item.component_area,
+                item.gap_mm,
+            ),
+        )
 
 
 def fit_wall_depth_model(

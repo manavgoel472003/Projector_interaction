@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.2.0
+
+- Add guided positive-touch calibration at the projection center and four
+  interior corners after empty-wall capture.
+- Learn and persist real contact gap and component-area ranges instead of
+  relying only on fixed depth thresholds.
+- Require three spatially consistent profile-matching frames before exposing
+  an Orbbec cursor, preventing raw depth noise from bouncing around the wall.
+- Add `--recalibrate-depth` to preserve projection points while relearning the
+  wall and guided touch profile.
+- Restart the Gemini pipeline once when initial USB 2.1 frame synchronization
+  times out.
+
 ## 3.1.0
 
 - Replace Orbbec RGB hand-landmark tracking with direct depth-background

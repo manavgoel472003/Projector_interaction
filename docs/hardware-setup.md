@@ -78,9 +78,11 @@ For a different projector layout, provide its resolution and desktop origin:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep people and objects out of the projected area while the green depth
    calibration ring fills for 45 frames.
-4. Touch and drag within the projected area. The app measures the foreground
-   surface's millimeter gap from the saved empty wall.
-5. Press `t` only when intentionally relearning the empty wall depth.
+4. Touch and hold the center target, then the upper-left, upper-right,
+   lower-right, and lower-left targets. Each target advances automatically
+   after collecting a stable positive contact.
+5. Touch and drag within the projected area.
+6. Press `t` only when intentionally relearning the wall and touch profile.
 
 Calibration accepts a projected quadrilateral covering at least 1.25% of the
 camera frame. Orbbec mode processes only that quadrilateral; RGB fallback uses
@@ -125,8 +127,10 @@ layout have not moved.
 
 In Orbbec mode, 45 empty-wall frames produce a per-pixel median depth and noise
 map. A three-frame temporal median is compared with that reference, and direct
-depth foreground components provide the interaction coordinate. MediaPipe is
-not used in this mode. The measured Gemini 336 defaults are:
+depth foreground components provide the interaction coordinate. Five guided
+touches learn accepted contact gap and component area. A component must match
+that profile for three spatially consistent frames before it becomes a cursor.
+MediaPipe is not used in this mode. The pre-calibration defaults are:
 
 ```bash
 ./run_wall_touch_demo.sh \

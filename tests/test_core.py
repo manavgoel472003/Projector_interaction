@@ -3,7 +3,10 @@ import unittest
 import numpy as np
 
 from wall_touch_core import (
+    DepthContactLock,
+    DepthContactObservation,
     DepthContactTracker,
+    DepthTouchProfile,
     DepthTouchGate,
     TouchGate,
     WallDepthModel,
@@ -15,6 +18,7 @@ from wall_touch_core import (
     point_in_output,
     projection_near_frame_edge,
     sample_fingertip_depth,
+    depth_target_has_foreground,
     transform_points,
     validate_camera_quad,
 )
@@ -134,6 +138,39 @@ class TouchGateTests(unittest.TestCase):
 
 
 class DepthTouchTests(unittest.TestCase):
+    def test_guided_touch_profile_filters_noise_and_lock_requires_stability(self):
+        samples = [
+            DepthContactObservation(
+                np.array([40, 50], np.float32),
+                26.0 + index % 3,
+                900 + 10 * index,
+            )
+            for index in range(15)
+        ]
+        profile = DepthTouchProfile.fit(samples)
+        lock = DepthContactLock(profile, acquisition_frames=3)
+        valid = DepthContactObservation(np.array([40, 50], np.float32), 27, 950)
+        noise = DepthContactObservation(np.array([100, 90], np.float32), 70, 120)
+
+        self.assertIsNone(lock.update([noise]))
+        self.assertIsNone(lock.update([valid]))
+        self.assertIsNone(lock.update([valid]))
+        self.assertIsNotNone(lock.update([valid]))
+
+    def test_target_presence_requires_strong_local_foreground(self):
+        reference = np.full((100, 140), 1200, np.float32)
+        noise = np.full(reference.shape, 15, np.float32)
+        empty = reference.copy()
+        touched = reference.copy()
+        touched[38:63, 58:83] -= 80
+
+        self.assertFalse(
+            depth_target_has_foreground(reference, empty, noise, np.array([70, 50]))
+        )
+        self.assertTrue(
+            depth_target_has_foreground(reference, touched, noise, np.array([70, 50]))
+        )
+
     def test_depth_tracker_finds_near_wall_end_of_connected_hand(self):
         reference = np.full((120, 180), 1200, np.float32)
         current = reference.copy()
