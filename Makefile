@@ -1,4 +1,4 @@
-.PHONY: install model test run clean
+.PHONY: install model test previews run clean
 
 install:
 	./install.sh
@@ -8,6 +8,9 @@ model:
 
 test:
 	.venv/bin/python -m unittest discover -s tests -v
+
+previews:
+	.venv/bin/python scripts/render_mode_previews.py
 
 run:
 	./run_wall_touch_demo.sh

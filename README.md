@@ -21,6 +21,29 @@ known PC webcam as its RGB fallback.
 - `connect-four`: two-player prism board with animated drops and win trails
 - `orbit-keeper`: steer a comet through beacons using temporary gravity wells
 
+## Projection Gallery
+
+These are direct frames from the projector renderers. Camera, calibration, and
+debug overlays are not included.
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/modes/paint.png" alt="Paint mode projector output" width="300"><br><strong>1. Paint</strong></td>
+    <td align="center"><img src="docs/images/modes/spill.png" alt="Spill mode projector output" width="300"><br><strong>2. Spill</strong></td>
+    <td align="center"><img src="docs/images/modes/ripple.png" alt="Ripple mode projector output" width="300"><br><strong>3. Ripple</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/modes/pulse.png" alt="Pulse mode projector output" width="300"><br><strong>4. Pulse</strong></td>
+    <td align="center"><img src="docs/images/modes/constellation.png" alt="Constellation mode projector output" width="300"><br><strong>5. Constellation</strong></td>
+    <td align="center"><img src="docs/images/modes/sand.png" alt="Magnetic Sand mode projector output" width="300"><br><strong>6. Magnetic Sand</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/images/modes/tic-tac-toe.png" alt="Tic Tac Toe projector output" width="300"><br><strong>7. Tic Tac Toe</strong></td>
+    <td align="center"><img src="docs/images/modes/connect-four.png" alt="Prism Four projector output" width="300"><br><strong>8. Prism Four</strong></td>
+    <td align="center"><img src="docs/images/modes/orbit-keeper.png" alt="Orbit Keeper projector output" width="300"><br><strong>9. Orbit Keeper</strong></td>
+  </tr>
+</table>
+
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
 sensor noise. Five guided open-hand presses then learn the real contact gap and
 palm-contact patch size for the current camera distance. The depth tracker uses
@@ -135,6 +158,7 @@ details.
 ```bash
 ./install.sh
 make test
+make previews
 .venv/bin/wall-touch-demo --help
 ```
 

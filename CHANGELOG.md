@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.5.1
+
+- Add clean 16:10 projector-output previews for all nine modes to the GitHub
+  README, without camera, calibration, cursor, or hardware imagery.
+- Add a deterministic preview renderer and `make previews` target so the
+  gallery can be refreshed after visual changes.
+
 ## 3.5.0
 
 - Add Prism Connect Four as mode `8`, with large touch columns, animated piece
