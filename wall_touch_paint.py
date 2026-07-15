@@ -33,11 +33,12 @@ from wall_touch_effects import PulseGrid, WatercolorPool
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "2.7"
+APP_VERSION = "2.7.1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
 DEFAULT_CALIBRATION = ROOT / "wall_touch_calibration.json"
 BLOCKED_CAMERA_NAMES = ("usb2.0 fhd uvc webcam", "shinetech")
+YUYV_CAMERA_NAMES = ("046d:0825",)
 MODE_ORDER = (
     "paint",
     "spill",
@@ -66,9 +67,15 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("WALL_TOUCH_CAMERA", DEFAULT_CAMERA),
         help="External V4L2 device path, or 'auto' to discover one (default).",
     )
-    parser.add_argument("--camera-width", type=int, default=1280)
-    parser.add_argument("--camera-height", type=int, default=720)
-    parser.add_argument("--camera-fps", type=int, default=30)
+    parser.add_argument("--camera-width", type=int, help="Requested width; defaults depend on camera format.")
+    parser.add_argument("--camera-height", type=int, help="Requested height; defaults depend on camera format.")
+    parser.add_argument("--camera-fps", type=int, help="Requested FPS; defaults depend on camera format.")
+    parser.add_argument(
+        "--camera-format",
+        choices=("auto", "mjpg", "yuyv"),
+        default="auto",
+        help="V4L2 pixel format (default: camera-specific automatic selection).",
+    )
     parser.add_argument("--projector-width", type=int, default=1920)
     parser.add_argument("--projector-height", type=int, default=1200)
     parser.add_argument("--projector-x", type=int, default=0)
@@ -161,11 +168,33 @@ def validate_camera(requested: str) -> tuple[str, str]:
     return str(path), name
 
 
-def open_camera(path: str, width: int, height: int, fps: int) -> cv2.VideoCapture:
+def camera_stream_profile(
+    identity: str,
+    requested_format: str,
+    width: int | None,
+    height: int | None,
+    fps: int | None,
+) -> tuple[str, int, int, int]:
+    use_yuyv = requested_format == "yuyv" or (
+        requested_format == "auto"
+        and any(token in identity.lower() for token in YUYV_CAMERA_NAMES)
+    )
+    if use_yuyv:
+        return "YUYV", width or 640, height or 480, fps or 30
+    return "MJPG", width or 1280, height or 720, fps or 30
+
+
+def open_camera(
+    path: str,
+    width: int,
+    height: int,
+    fps: int,
+    pixel_format: str,
+) -> cv2.VideoCapture:
     cap = cv2.VideoCapture(path, cv2.CAP_V4L2)
     if not cap.isOpened():
         raise RuntimeError(f"Could not open external camera {path}")
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*pixel_format))
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
@@ -181,6 +210,11 @@ def read_camera_frame(cap: cv2.VideoCapture, timeout_seconds: float = 2.5) -> np
             return frame
         time.sleep(0.04)
     raise RuntimeError("External camera did not return a frame before the timeout")
+
+
+def capture_fourcc(cap: cv2.VideoCapture) -> str:
+    value = int(cap.get(cv2.CAP_PROP_FOURCC))
+    return "".join(chr((value >> (8 * index)) & 0xFF) for index in range(4)).strip("\x00")
 
 
 def make_base_canvas(width: int, height: int) -> np.ndarray:
@@ -424,14 +458,22 @@ def create_landmarker(model_path: Path, confidence: float):
 def main() -> None:
     args = parse_args()
     camera_path, identity = validate_camera(args.camera)
+    pixel_format, camera_width, camera_height, camera_fps = camera_stream_profile(
+        identity,
+        args.camera_format,
+        args.camera_width,
+        args.camera_height,
+        args.camera_fps,
+    )
     print(f"Wall Touch Demo v{APP_VERSION}")
     print(f"External camera: {identity} ({Path(camera_path).resolve()})")
+    print(f"Camera request: {pixel_format} {camera_width}x{camera_height} at {camera_fps} FPS")
     print(
         f"Projector: {args.projector_width}x{args.projector_height} "
         f"at desktop ({args.projector_x},{args.projector_y})"
     )
 
-    cap = open_camera(camera_path, args.camera_width, args.camera_height, args.camera_fps)
+    cap = open_camera(camera_path, camera_width, camera_height, camera_fps, pixel_format)
     try:
         frame = read_camera_frame(cap)
     except RuntimeError:
@@ -440,7 +482,10 @@ def main() -> None:
     frame_height, frame_width = frame.shape[:2]
     frame_size = (frame_width, frame_height)
     output_size = (args.projector_width, args.projector_height)
-    print(f"Camera stream: {frame_width}x{frame_height}")
+    print(
+        f"Camera stream: {capture_fourcc(cap) or 'unknown'} "
+        f"{frame_width}x{frame_height} at {cap.get(cv2.CAP_PROP_FPS):.1f} FPS"
+    )
 
     projector_window = "Wall Touch Paint - PROJECTOR"
     debug_window = f"Wall Touch Setup - {identity}"

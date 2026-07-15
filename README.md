@@ -56,6 +56,15 @@ verified the device. Explicit paths such as `--camera /dev/video4` work, but
 ambiguous numeric arguments such as `--camera 4` are intentionally refused.
 The camera can also be selected persistently with `WALL_TOUCH_CAMERA`.
 
+Camera format is selected automatically. The Logitech `046d:0825` uses raw
+`YUYV 640x480/30` because its MJPEG stream produces corrupt-frame warnings.
+Format and stream settings can be overridden when testing other hardware:
+
+```bash
+./run_wall_touch_demo.sh \
+  --camera-format yuyv --camera-width 640 --camera-height 480 --camera-fps 30
+```
+
 ## Calibration
 
 1. Fix the projector and camera in place.

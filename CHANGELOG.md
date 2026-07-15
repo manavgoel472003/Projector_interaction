@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.7.1
+
+- Avoid the repeated libjpeg corruption warnings produced by Logitech
+  `046d:0825` MJPEG streams by automatically selecting clean `YUYV`
+  `640x480/30` capture.
+- Add explicit `--camera-format`, `--camera-width`, `--camera-height`, and
+  `--camera-fps` overrides and report the negotiated stream at startup.
+
 ## 2.7.0
 
 - Discover any connected external V4L2 camera instead of depending on one

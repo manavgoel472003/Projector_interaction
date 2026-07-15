@@ -3,7 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from wall_touch_paint import validate_camera
+from wall_touch_paint import camera_stream_profile, validate_camera
 
 
 class CameraSelectionTests(unittest.TestCase):
@@ -28,6 +28,18 @@ class CameraSelectionTests(unittest.TestCase):
             device.touch()
             with patch("wall_touch_paint.camera_name", return_value="Custom Camera"):
                 self.assertEqual(validate_camera(str(device)), (str(device), "Custom Camera"))
+
+    def test_problematic_logitech_mjpeg_uses_clean_raw_profile(self):
+        self.assertEqual(
+            camera_stream_profile("UVC Camera (046d:0825)", "auto", None, None, None),
+            ("YUYV", 640, 480, 30),
+        )
+
+    def test_stream_profile_allows_explicit_overrides(self):
+        self.assertEqual(
+            camera_stream_profile("Other Camera", "mjpg", 1920, 1080, 25),
+            ("MJPG", 1920, 1080, 25),
+        )
 
 
 if __name__ == "__main__":

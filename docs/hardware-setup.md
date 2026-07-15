@@ -39,6 +39,11 @@ To choose a camera explicitly or override automatic selection:
 WALL_TOUCH_CAMERA=/dev/video4 ./run_wall_touch_demo.sh --fresh
 ```
 
+The launcher automatically avoids the malformed MJPEG stream on Logitech
+`046d:0825` cameras and selects clean `YUYV 640x480/30` capture. Use
+`--camera-format`, `--camera-width`, `--camera-height`, and `--camera-fps` only
+when overriding the automatic profile for other hardware.
+
 For a different projector layout, provide its resolution and desktop origin:
 
 ```bash
