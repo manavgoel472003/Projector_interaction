@@ -29,9 +29,9 @@ class AmbientEffectTests(unittest.TestCase):
             self.assertTrue(effect.add(point, COLOR, 1.0 + index * 0.2))
 
         sizes = np.array([float(star["size"]) for star in effect.stars])
-        self.assertLess(sizes.min(), 0.5)
-        self.assertTrue(np.any((sizes >= 0.84) & (sizes <= 1.38)))
-        self.assertGreater(sizes.max(), 2.0)
+        self.assertLess(sizes.min(), 0.9)
+        self.assertTrue(np.any((sizes >= 1.35) & (sizes <= 2.15)))
+        self.assertGreater(sizes.max(), 3.0)
 
     def test_magnetic_sand_moves_toward_touch(self):
         effect = MagneticSand(320, 200, count=200)
@@ -39,7 +39,11 @@ class AmbientEffectTests(unittest.TestCase):
         effect.attract(POINT)
         effect.step(1 / 30)
         self.assertFalse(np.allclose(initial, effect.positions))
-        self.assertEqual(effect.render().shape, (200, 320, 3))
+        image = effect.render()
+        self.assertEqual(image.shape, (200, 320, 3))
+        changed = np.any(image != effect.background, axis=2)
+        self.assertGreater(np.count_nonzero(changed), 500)
+        self.assertGreater(image.max(), 245)
 
 if __name__ == "__main__":
     unittest.main()

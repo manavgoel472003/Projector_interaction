@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.1
+
+- Enlarge all constellation size tiers and add layered star bloom, white-hot
+  cores, subtle rays, and brighter glowing connections.
+- Double the default magnetic-sand density and render larger silver, cyan, and
+  gold grains with metallic highlights and stronger bloom.
+- Preserve full-projector render performance within the Gemini's 15 FPS frame
+  budget.
+
 ## 3.2.0
 
 - Add guided positive-touch calibration at the projection center and four

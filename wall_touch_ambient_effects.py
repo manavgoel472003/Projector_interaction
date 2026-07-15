@@ -30,7 +30,8 @@ class ConstellationField:
         self.phase = 0.0
         self.last_emit = -1e9
         self.last_point: np.ndarray | None = None
-        self.background = gradient_background(width, height, (30, 17, 7), (48, 20, 30))
+        self.render_scale = float(np.clip(min(width, height) / 900.0, 0.75, 1.4))
+        self.background = gradient_background(width, height, (20, 10, 7), (34, 12, 29))
 
     @property
     def count(self) -> int:
@@ -48,11 +49,11 @@ class ConstellationField:
             return False
         size_roll = float(self.rng.random())
         if size_roll < 0.55:
-            size = 0.34 + size_roll / 0.55 * 0.42
+            size = 0.65 + size_roll / 0.55 * 0.55
         elif size_roll < 0.88:
-            size = 0.84 + (size_roll - 0.55) / 0.33 * 0.54
+            size = 1.35 + (size_roll - 0.55) / 0.33 * 0.80
         else:
-            size = 1.65 + (size_roll - 0.88) / 0.12 * 0.85
+            size = 2.55 + (size_roll - 0.88) / 0.12 * 1.65
         self.stars.append(
             {
                 "point": point.copy(),
@@ -80,12 +81,13 @@ class ConstellationField:
             return image
         points = np.array([star["point"] for star in self.stars], dtype=np.float32)
         connection_distance = min(self.width, self.height) * 0.18
-        connection_light = np.zeros_like(image)
+        connection_glow = np.zeros_like(image)
+        connection_core = np.zeros_like(image)
         for index, star in enumerate(self.stars):
             distances = np.linalg.norm(points[index + 1 :] - points[index], axis=1)
             for offset in np.where(distances < connection_distance)[0]:
                 other = index + 1 + int(offset)
-                alpha = (1 - distances[offset] / connection_distance) * 0.36
+                alpha = (1 - distances[offset] / connection_distance) * 0.62
                 color = (
                     np.asarray(star["color"], dtype=np.float32)
                     + np.asarray(self.stars[other]["color"], dtype=np.float32)
@@ -93,49 +95,76 @@ class ConstellationField:
                 start = tuple(np.rint(points[index]).astype(int))
                 end = tuple(np.rint(points[other]).astype(int))
                 cv2.line(
-                    connection_light,
+                    connection_glow,
                     start,
                     end,
-                    bgr(color, alpha * 0.52),
-                    5,
+                    bgr(color * 0.72 + 255 * 0.28, alpha * 0.72),
+                    max(5, int(8 * self.render_scale)),
                     cv2.LINE_AA,
                 )
-                bright_core = color * 0.72 + 255 * 0.28
+                bright_core = color * 0.52 + 255 * 0.48
                 cv2.line(
-                    connection_light,
+                    connection_core,
                     start,
                     end,
-                    bgr(bright_core, min(1.0, alpha * 1.35)),
-                    1,
+                    bgr(bright_core, min(1.0, alpha * 1.7)),
+                    max(1, int(1.6 * self.render_scale)),
                     cv2.LINE_AA,
                 )
-        image = cv2.add(image, connection_light)
+        connection_bloom = cv2.GaussianBlur(
+            connection_glow,
+            (0, 0),
+            sigmaX=max(2.0, 4.5 * self.render_scale),
+        )
+        image = cv2.add(image, connection_bloom)
+        image = cv2.add(image, connection_glow)
+        image = cv2.add(image, connection_core)
+        star_glow = np.zeros_like(image)
         for star in self.stars:
             point = tuple(np.rint(np.asarray(star["point"])).astype(int))
             twinkle = 0.65 + 0.35 * np.sin(self.phase + float(star["phase"])) ** 2
             size = float(star["size"])
             color = np.asarray(star["color"])
             cv2.circle(
-                image,
+                star_glow,
                 point,
-                max(2, int(7 * twinkle * size)),
-                bgr(color, 0.20),
+                max(3, int(10 * self.render_scale * twinkle * size)),
+                bgr(color * 0.68 + 255 * 0.32, 0.62),
                 -1,
                 cv2.LINE_AA,
             )
+        star_bloom = cv2.GaussianBlur(
+            star_glow,
+            (0, 0),
+            sigmaX=max(2.0, 5.5 * self.render_scale),
+        )
+        image = cv2.add(image, star_bloom)
+        image = cv2.addWeighted(image, 1.0, star_glow, 0.50, 0)
+        for star in self.stars:
+            point = tuple(np.rint(np.asarray(star["point"])).astype(int))
+            twinkle = 0.65 + 0.35 * np.sin(self.phase + float(star["phase"])) ** 2
+            size = float(star["size"])
+            color = np.asarray(star["color"])
+            core_radius = max(2, int(3.4 * self.render_scale * twinkle * size))
             cv2.circle(
                 image,
                 point,
-                max(1, int(2.5 * twinkle * size)),
-                bgr(color, 0.92),
+                core_radius,
+                bgr(color * 0.38 + 255 * 0.62, 1.0),
                 -1,
                 cv2.LINE_AA,
             )
+            if size >= 1.35:
+                ray = max(5, int(7 * self.render_scale * size * twinkle))
+                ray_color = bgr(color * 0.25 + 255 * 0.75, 0.88)
+                cv2.line(image, (point[0] - ray, point[1]), (point[0] + ray, point[1]), ray_color, 1, cv2.LINE_AA)
+                cv2.line(image, (point[0], point[1] - ray), (point[0], point[1] + ray), ray_color, 1, cv2.LINE_AA)
+            cv2.circle(image, point, max(1, core_radius // 3), (255, 255, 255), -1, cv2.LINE_AA)
         return image
 
 
 class MagneticSand:
-    def __init__(self, width: int, height: int, count: int = 1400) -> None:
+    def __init__(self, width: int, height: int, count: int = 2800) -> None:
         self.width = width
         self.height = height
         self.rng = np.random.default_rng(31)
@@ -146,7 +175,8 @@ class MagneticSand:
         self.target: np.ndarray | None = None
         self.target_age = 0.0
         self.phase = 0.0
-        self.background = gradient_background(width, height, (35, 39, 38), (22, 27, 31))
+        self.render_scale = float(np.clip(min(width, height) / 900.0, 0.8, 1.5))
+        self.background = gradient_background(width, height, (24, 27, 30), (9, 12, 20))
 
     def clear(self) -> None:
         self.positions[:, 0] = self.rng.uniform(0, self.width, len(self.positions))
@@ -179,12 +209,39 @@ class MagneticSand:
 
     def render(self) -> np.ndarray:
         image = self.background.copy()
-        layer = np.zeros_like(image)
+        fine = np.zeros_like(image)
+        large = np.zeros_like(image)
+        cores = np.zeros_like(image)
         points = np.rint(self.positions).astype(np.int32)
         points[:, 0] = np.clip(points[:, 0], 0, self.width - 1)
         points[:, 1] = np.clip(points[:, 1], 0, self.height - 1)
-        split = np.arange(len(points)) % 5 == 0
-        layer[points[~split, 1], points[~split, 0]] = (120, 182, 214)
-        layer[points[split, 1], points[split, 0]] = (205, 166, 98)
-        glow = cv2.dilate(layer, np.ones((3, 3), dtype=np.uint8))
-        return cv2.add(image, cv2.addWeighted(glow, 0.38, layer, 0.92, 0))
+        indices = np.arange(len(points))
+        large_mask = indices % 7 == 0
+        gold_mask = indices % 5 == 0
+        cool_mask = ~gold_mask & ~large_mask
+        fine[points[cool_mask, 1], points[cool_mask, 0]] = (255, 230, 185)
+        fine[points[gold_mask, 1], points[gold_mask, 0]] = (105, 215, 255)
+        large[points[large_mask, 1], points[large_mask, 0]] = (220, 245, 255)
+        cores[points[:, 1], points[:, 0]] = (245, 250, 255)
+
+        fine_radius = max(1, int(round(1.5 * self.render_scale)))
+        large_radius = max(3, int(round(3.2 * self.render_scale)))
+        fine_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (fine_radius * 2 + 1, fine_radius * 2 + 1)
+        )
+        large_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (large_radius * 2 + 1, large_radius * 2 + 1)
+        )
+        fine_body = cv2.dilate(fine, fine_kernel)
+        large_body = cv2.dilate(large, large_kernel)
+        combined = cv2.add(fine_body, large_body)
+        glow = cv2.GaussianBlur(
+            combined,
+            (0, 0),
+            sigmaX=max(2.0, 3.6 * self.render_scale),
+        )
+        image = cv2.addWeighted(image, 1.0, glow, 0.82, 0)
+        image = cv2.add(image, fine_body)
+        image = cv2.add(image, large_body)
+        image = cv2.addWeighted(image, 1.0, cores, 0.94, 0)
+        return image
