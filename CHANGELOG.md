@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.5.0
+
+- Add Prism Connect Four as mode `8`, with large touch columns, animated piece
+  drops, alternating players, full win detection, match scores, and projected
+  round reset.
+- Add Orbit Keeper as mode `9`, with substepped orbital physics, temporary
+  touch-placed gravity wells, collectible beacons, combos, lives, a paused
+  45-second timer, comet trails, and projected reset.
+- Keep both games reliable with one-action-per-press debouncing and large
+  interaction targets designed for mapped open-hand contact.
+- Add deterministic rule, physics, lifecycle, and rendering tests for both
+  game engines.
+
 ## 3.4.1
 
 - Add bright neutral dividers, a light outer boundary, and restrained glow to

@@ -18,6 +18,8 @@ known PC webcam as its RGB fallback.
 - `constellation`: fading stars connected by fine luminous lines
 - `sand`: metallic grains attracted into touch-driven vortices
 - `tic-tac-toe`: two-player touch board with scores and projected round reset
+- `connect-four`: two-player prism board with animated drops and win trails
+- `orbit-keeper`: steer a comet through beacons using temporary gravity wells
 
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
 sensor noise. Five guided open-hand presses then learn the real contact gap and
@@ -119,7 +121,7 @@ details.
 
 | Key | Action |
 | --- | --- |
-| `1`-`7` | Select any mode directly; `7` opens Tic Tac Toe |
+| `1`-`9` | Select any mode directly; games occupy `7`-`9` |
 | `]` / `m` | Next mode |
 | `[` | Previous mode |
 | `c` | Clear artwork and keep calibration |
@@ -145,6 +147,8 @@ wall_touch_core.py     geometry, depth-background tracking, and touch gates
 wall_touch_effects.py  original visual simulations
 wall_touch_ambient_effects.py  ambient and field simulations
 wall_touch_games.py    touch-controlled games and press debouncing
+wall_touch_connect_four.py  Prism Connect Four rules and renderer
+wall_touch_orbit_keeper.py  Orbit Keeper physics and renderer
 tests/                 deterministic unit tests
 scripts/               model setup utility
 docs/                  hardware and calibration notes

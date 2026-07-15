@@ -21,6 +21,7 @@ import numpy as np
 os.environ["QT_QPA_FONTDIR"] = SYSTEM_FONT_DIR
 
 from wall_touch_ambient_effects import ConstellationField, MagneticSand
+from wall_touch_connect_four import PrismConnectFour
 from wall_touch_core import (
     CORNER_NAMES,
     DepthContactLock,
@@ -45,11 +46,12 @@ from wall_touch_core import (
 )
 from wall_touch_effects import PulseGrid, WatercolorPool
 from wall_touch_games import TicTacToe
+from wall_touch_orbit_keeper import OrbitKeeper
 from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "3.4.1"
+APP_VERSION = "3.5"
 DEPTH_TOUCH_MODE = "hand-contact-v1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
@@ -64,6 +66,8 @@ MODE_ORDER = (
     "constellation",
     "sand",
     "tic-tac-toe",
+    "connect-four",
+    "orbit-keeper",
 )
 MODE_KEYS = {ord(str(index + 1)): mode for index, mode in enumerate(MODE_ORDER)}
 
@@ -777,6 +781,8 @@ def main() -> None:
     constellation = ConstellationField(*output_size)
     sand = MagneticSand(*output_size)
     tic_tac_toe = TicTacToe(*output_size)
+    connect_four = PrismConnectFour(*output_size)
+    orbit_keeper = OrbitKeeper(*output_size)
     reactive_effects = (
         spill,
         ripple,
@@ -784,6 +790,8 @@ def main() -> None:
         constellation,
         sand,
         tic_tac_toe,
+        connect_four,
+        orbit_keeper,
     )
     interaction_mode = args.mode
     gate = TouchGate(
@@ -1178,8 +1186,23 @@ def main() -> None:
                     )
                     print(f"Touch plane learned: reference hand scale={touch_reference:.1f}")
 
+            game_ready = bool(
+                matrix is not None
+                and not collecting_wall_depth
+                and not collecting_depth_touch
+                and not collecting_touch
+            )
             if interaction_mode == "tic-tac-toe":
                 tic_tac_toe.update(mapped_tip, decision.active, now)
+            elif interaction_mode == "connect-four":
+                connect_four.update(mapped_tip, decision.active, now)
+            elif interaction_mode == "orbit-keeper":
+                orbit_keeper.update(
+                    mapped_tip if game_ready else None,
+                    decision.active and game_ready,
+                    now,
+                    delta if game_ready else 0.0,
+                )
             elif decision.active and mapped_tip is not None:
                 color = paint_color(mapped_tip, *output_size)
                 if interaction_mode == "spill":
@@ -1214,6 +1237,10 @@ def main() -> None:
                 art_frame = sand.render()
             elif interaction_mode == "tic-tac-toe":
                 art_frame = tic_tac_toe.render(now)
+            elif interaction_mode == "connect-four":
+                art_frame = connect_four.render(now)
+            elif interaction_mode == "orbit-keeper":
+                art_frame = orbit_keeper.render(now)
             else:
                 art_frame = canvas.copy()
 
@@ -1248,7 +1275,8 @@ def main() -> None:
                     cursor_color = (70, 220, 90) if decision.active else (30, 190, 255)
                     cursor_radius = (
                         28
-                        if interaction_mode == "tic-tac-toe"
+                        if interaction_mode
+                        in {"tic-tac-toe", "connect-four", "orbit-keeper"}
                         else args.brush_radius + 8
                     )
                     cv2.circle(projector_frame, point, cursor_radius, cursor_color, 5, cv2.LINE_AA)
