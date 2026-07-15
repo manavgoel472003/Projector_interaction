@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.1.0
+
+- Replace Orbbec RGB hand-landmark tracking with direct depth-background
+  contact tracking inside the calibrated projection.
+- Persist a per-pixel empty-wall depth reference and noise map in a compressed
+  calibration sidecar.
+- Add three-frame temporal depth filtering and pixel-specific noise rejection.
+- Tune the measured Gemini 336 setup to a `30 mm` contact limit and `0.75`
+  noise multiplier, while retaining command-line overrides.
+- Tolerate one dropped synchronized Orbbec frame before failing capture.
+
 ## 3.0.0
 
 - Add synchronized Orbbec Gemini RGB-D capture through the official

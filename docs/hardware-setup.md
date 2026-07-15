@@ -77,14 +77,14 @@ For a different projector layout, provide its resolution and desktop origin:
 2. In the camera window on the laptop, click their centers in order:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep people and objects out of the projected area while the green depth
-   calibration ring fills for 12 frames.
-4. Touch and drag within the projected area. The app measures the fingertip's
-   millimeter gap from the fitted wall plane.
+   calibration ring fills for 45 frames.
+4. Touch and drag within the projected area. The app measures the foreground
+   surface's millimeter gap from the saved empty wall.
 5. Press `t` only when intentionally relearning the empty wall depth.
 
-The projection may occupy a small part of the full camera frame. After the four
-clicks, the hand detector automatically crops around that region. Calibration
-accepts a projected quadrilateral covering at least 1.25% of the camera frame.
+Calibration accepts a projected quadrilateral covering at least 1.25% of the
+camera frame. Orbbec mode processes only that quadrilateral; RGB fallback uses
+an expanded crop around it for hand tracking.
 
 ## Controls
 
@@ -116,24 +116,27 @@ The six modes are:
 5. `constellation`: connected fading stars
 6. `sand`: touch-attracted metallic grains
 
-Calibration is saved in `wall_touch_calibration.json`. Start without `--fresh`
-to reuse it only when the camera, projector, wall, and display layout have not
-moved.
+Geometry is saved in `wall_touch_calibration.json`. The empty-wall depth and
+noise map are saved in `wall_touch_calibration.depth.npz`. Start without
+`--fresh` to reuse them only when the camera, projector, wall, and display
+layout have not moved.
 
 ## What counts as touch
 
-In Orbbec mode, the empty wall is fitted as a perspective-correct reciprocal
-depth plane. MediaPipe locates the index fingertip in aligned RGB; a robust
-depth patch just inside the fingertip is compared with the expected wall depth
-at that pixel. The default contact range is `-15` to `45 mm`:
+In Orbbec mode, 45 empty-wall frames produce a per-pixel median depth and noise
+map. A three-frame temporal median is compared with that reference, and direct
+depth foreground components provide the interaction coordinate. MediaPipe is
+not used in this mode. The measured Gemini 336 defaults are:
 
 ```bash
-./run_wall_touch_demo.sh --touch-min-gap-mm -10 --touch-max-gap-mm 35
+./run_wall_touch_demo.sh \
+  --touch-max-gap-mm 30 --depth-noise-multiplier 0.75
 ```
 
 Lower `--touch-max-gap-mm` to reject hovering more strictly. Raise it if real
-touches are missed because the sampled finger surface sits in front of the
-wall. The debug window reports the live wall gap.
+touches are missed, but raising it can also admit depth noise. Moving the depth
+camera closer to the wall is preferable when possible. The debug window reports
+the live wall gap.
 
 ### RGB fallback
 
@@ -162,13 +165,13 @@ important than touch continuity.
 
 ## Technical basis
 
-- MediaPipe Hand Landmarker provides the 21 hand landmarks and fingertip.
 - OpenCV computes a planar homography from the four camera clicks to known
   projector pixels.
-- The fingertip is mapped through that homography.
-- Orbbec hardware D2C aligns depth measurements to RGB fingertip pixels.
-- A robust reciprocal-depth plane models the empty wall.
-- RGB fallback uses palm size in mapped projector coordinates.
+- Orbbec hardware D2C provides synchronized aligned color and depth.
+- Per-pixel background subtraction, temporal filtering, and connected
+  components locate depth contact without RGB landmarks.
+- MediaPipe provides fingertip landmarks only for RGB fallback, which uses
+  palm size in mapped projector coordinates.
 - A short dwell rejects fly-by motion, then dragging paints continuously.
 
 Primary references:

@@ -1,10 +1,10 @@
 # Projector Interaction
 
 Turn a projector and an Orbbec RGB-D camera into an interactive wall. The
-camera maps a fingertip into projector coordinates with a four-point
-homography, while aligned depth measures its distance from the calibrated wall
-plane in millimeters. A standard external RGB camera remains available as a
-fallback.
+camera maps depth foreground into projector coordinates with a four-point
+homography, while aligned depth measures its distance from a calibrated empty
+wall in millimeters. Orbbec mode does not depend on RGB hand landmarks. A
+standard external RGB camera remains available as a fallback.
 
 The application prefers a connected Orbbec automatically. It never selects the
 known PC webcam as its RGB fallback.
@@ -18,8 +18,9 @@ known PC webcam as its RGB fallback.
 - `constellation`: fading stars connected by fine luminous lines
 - `sand`: metallic grains attracted into touch-driven vortices
 
-`spill` is the default. Depth contact accepts a fingertip from `-15 mm` behind
-the fitted wall through `45 mm` in front, with a `50 ms` dwell.
+`spill` is the default. Gemini depth contact uses a measured `30 mm` wall-gap
+limit with a `50 ms` dwell. The empty-wall calibration learns both depth and
+per-pixel sensor noise so unstable IR pixels do not continuously trigger.
 
 ## Requirements
 
@@ -41,8 +42,8 @@ cd Projector_interaction
 ```
 
 `install.sh` creates `.venv`, installs pinned runtime dependencies, downloads
-the official MediaPipe Hand Landmarker model, verifies its SHA-256 checksum,
-and runs the tests. The udev command installs Orbbec's official Linux USB
+the MediaPipe model used by RGB fallback, verifies its SHA-256 checksum, and
+runs the tests. The udev command installs Orbbec's official Linux USB
 permissions and requires your sudo password once.
 
 With the Gemini connected, `--sensor auto` selects synchronized, hardware
@@ -90,12 +91,15 @@ Format and stream settings can be overridden when testing other hardware:
 1. Fix the projector and camera in place.
 2. Click the four projected targets in the laptop debug window in this order:
    top-left, top-right, bottom-right, bottom-left.
-3. Keep the projected area empty while 12 wall-depth frames are collected.
+3. Keep the projected area empty while 45 wall-depth frames are collected
+   (about three seconds on the USB 2.1 profile).
 4. Touch and drag inside the projected region. No fingertip depth calibration
    target is needed.
 
-Calibration is stored locally in `wall_touch_calibration.json` and is ignored
-by Git. Use `--fresh` or press `r` after moving the camera, projector, or wall.
+Geometry is stored in `wall_touch_calibration.json`; the depth reference and
+noise map are stored in `wall_touch_calibration.depth.npz`. Both are local and
+ignored by Git. Use `--fresh` or press `r` after moving the camera, projector,
+or wall.
 See [docs/hardware-setup.md](docs/hardware-setup.md) for placement and display
 details.
 
@@ -125,7 +129,7 @@ Repository layout:
 ```text
 wall_touch_paint.py    camera, calibration, interaction loop
 wall_touch_orbbec.py  synchronized Orbbec RGB-D capture
-wall_touch_core.py     geometry, wall plane, and touch gates
+wall_touch_core.py     geometry, depth-background tracking, and touch gates
 wall_touch_effects.py  original visual simulations
 wall_touch_ambient_effects.py  ambient and field simulations
 tests/                 deterministic unit tests
@@ -135,10 +139,11 @@ docs/                  hardware and calibration notes
 
 ## Limitations
 
-Depth accuracy is limited at fingertip silhouettes and by reflective or
-transparent walls. The app samples a patch just inside the fingertip and uses a
-robust wall plane, but `--touch-max-gap-mm` may need adjustment for camera
-placement and pointing posture. RGB fallback still uses approximate hand size.
+Depth accuracy is limited at fingertip silhouettes, longer camera distances,
+and reflective or transparent walls. The measured Gemini 336 setup uses
+`--touch-max-gap-mm 30 --depth-noise-multiplier 0.75`. Move the camera closer
+before increasing the gap limit; increasing it can turn depth noise into false
+touches. RGB fallback still uses MediaPipe and approximate hand size.
 
 No software license has been selected for this repository yet. Add one before
 publishing if others should be allowed to copy, modify, or redistribute it.

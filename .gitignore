@@ -12,6 +12,7 @@ dist/
 # Downloaded runtime asset and local calibration.
 models/*.task
 wall_touch_calibration.json
+wall_touch_calibration.depth.npz
 
 # Editor and operating-system files.
 .idea/

@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from wall_touch_core import (
+    DepthContactTracker,
     DepthTouchGate,
     TouchGate,
     WallDepthModel,
@@ -133,6 +134,59 @@ class TouchGateTests(unittest.TestCase):
 
 
 class DepthTouchTests(unittest.TestCase):
+    def test_depth_tracker_finds_near_wall_end_of_connected_hand(self):
+        reference = np.full((120, 180), 1200, np.float32)
+        current = reference.copy()
+        current[45:75, 70:125] = 1110
+        current[55:66, 45:75] = 1176
+        quad = np.array([[10, 10], [170, 10], [170, 110], [10, 110]], np.float32)
+
+        contact = DepthContactTracker(reference, quad).detect(current)
+
+        self.assertIsNotNone(contact)
+        self.assertAlmostEqual(contact.gap_mm, 24.0, delta=1.0)
+        self.assertLess(contact.camera_point[0], 76)
+        self.assertGreater(contact.component_area, 1500)
+
+    def test_depth_tracker_reports_hover_gap_for_gate_rejection(self):
+        reference = np.full((100, 140), 1500, np.float32)
+        current = reference.copy()
+        current[30:75, 45:100] = 1400
+        quad = np.array([[5, 5], [134, 5], [134, 94], [5, 94]], np.float32)
+
+        hover = DepthContactTracker(reference, quad).detect(current)
+
+        self.assertIsNotNone(hover)
+        self.assertAlmostEqual(hover.gap_mm, 100.0, delta=1.0)
+
+    def test_depth_tracker_rejects_wall_noise_and_small_speckles(self):
+        rng = np.random.default_rng(7)
+        reference = np.full((100, 140), 1100, np.float32)
+        noisy = reference + rng.normal(0, 4, reference.shape).astype(np.float32)
+        noisy[40:44, 60:64] -= 30
+        quad = np.array([[5, 5], [134, 5], [134, 94], [5, 94]], np.float32)
+
+        contact = DepthContactTracker(reference, quad).detect(noisy)
+
+        self.assertIsNone(contact)
+
+    def test_depth_tracker_uses_calibrated_pixel_noise(self):
+        reference = np.full((100, 140), 1200, np.float32)
+        noise = np.full(reference.shape, 30.0, np.float32)
+        current = reference.copy()
+        current[25:75, 40:100] -= 35
+        quad = np.array([[5, 5], [134, 5], [134, 94], [5, 94]], np.float32)
+
+        observation = DepthContactTracker(
+            reference,
+            quad,
+            wall_noise_mm=noise,
+            noise_multiplier=1.5,
+            temporal_frames=1,
+        ).detect(current)
+
+        self.assertIsNone(observation)
+
     def test_reciprocal_depth_plane_fits_slanted_wall_with_outliers(self):
         width, height = 320, 200
         yy, xx = np.mgrid[:height, :width]

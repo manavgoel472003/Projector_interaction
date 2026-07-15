@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 import cv2
@@ -169,6 +170,139 @@ class WallDepthModel:
         if coefficients.shape != (3,) or not np.isfinite(coefficients).all():
             raise ValueError("Invalid wall depth coefficients")
         return cls(coefficients, float(data["rmse_mm"]), int(data["sample_count"]))
+
+
+@dataclass(frozen=True)
+class DepthContactObservation:
+    camera_point: np.ndarray
+    gap_mm: float
+    component_area: int
+
+
+class DepthContactTracker:
+    """Locate the part of a foreground depth component nearest the wall."""
+
+    def __init__(
+        self,
+        wall_depth_mm: np.ndarray,
+        camera_points: np.ndarray,
+        wall_noise_mm: np.ndarray | None = None,
+        minimum_change_mm: float = 15.0,
+        maximum_change_mm: float = 800.0,
+        minimum_component_area: int = 80,
+        near_wall_limit_mm: float = 60.0,
+        noise_multiplier: float = 0.75,
+        temporal_frames: int = 3,
+    ) -> None:
+        reference = np.asarray(wall_depth_mm, dtype=np.float32)
+        if reference.ndim != 2:
+            raise ValueError("Wall depth reference must be a 2D array")
+        points = np.asarray(camera_points, dtype=np.float32)
+        if points.shape != (4, 2):
+            raise ValueError("Expected four projection corners")
+        if minimum_change_mm <= 0 or maximum_change_mm <= minimum_change_mm:
+            raise ValueError("Invalid depth-change range")
+
+        self.wall_depth_mm = reference.copy()
+        if wall_noise_mm is None:
+            self.wall_noise_mm = np.zeros_like(reference)
+        else:
+            noise = np.asarray(wall_noise_mm, dtype=np.float32)
+            if noise.shape != reference.shape:
+                raise ValueError("Wall noise map must match the depth reference")
+            self.wall_noise_mm = np.nan_to_num(
+                noise, nan=maximum_change_mm, posinf=maximum_change_mm
+            )
+        self.minimum_change_mm = float(minimum_change_mm)
+        self.maximum_change_mm = float(maximum_change_mm)
+        self.minimum_component_area = int(minimum_component_area)
+        self.near_wall_limit_mm = float(near_wall_limit_mm)
+        self.noise_multiplier = float(noise_multiplier)
+        self._history: deque[np.ndarray] = deque(maxlen=max(1, int(temporal_frames)))
+        self.projection_mask = np.zeros(reference.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(
+            self.projection_mask,
+            np.rint(points).astype(np.int32),
+            255,
+        )
+        self._open_kernel = np.ones((3, 3), dtype=np.uint8)
+        self._close_kernel = np.ones((5, 5), dtype=np.uint8)
+
+    def detect(self, depth_mm: np.ndarray) -> DepthContactObservation | None:
+        depth = np.asarray(depth_mm, dtype=np.float32)
+        if depth.shape != self.wall_depth_mm.shape:
+            return None
+
+        self._history.append(depth.copy())
+        history = np.stack(self._history)
+        current = np.ma.median(
+            np.ma.masked_less(history, 100.0), axis=0
+        ).filled(0.0).astype(np.float32)
+
+        reference = self.wall_depth_mm
+        valid = (
+            (self.projection_mask > 0)
+            & np.isfinite(reference)
+            & (reference >= 100.0)
+            & np.isfinite(current)
+            & (current >= 100.0)
+        )
+        gap = reference - current
+        change_threshold = np.maximum(
+            self.minimum_change_mm,
+            self.noise_multiplier * self.wall_noise_mm + 8.0,
+        )
+        foreground = (
+            valid
+            & (gap >= change_threshold)
+            & (gap <= self.maximum_change_mm)
+        ).astype(np.uint8) * 255
+        foreground = cv2.morphologyEx(
+            foreground, cv2.MORPH_OPEN, self._open_kernel
+        )
+        foreground = cv2.morphologyEx(
+            foreground, cv2.MORPH_CLOSE, self._close_kernel
+        )
+
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            foreground, connectivity=8
+        )
+        candidates: list[tuple[bool, int, float, DepthContactObservation]] = []
+        for label in range(1, count):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area < self.minimum_component_area:
+                continue
+            ys, xs = np.nonzero(labels == label)
+            values = gap[ys, xs]
+            near_percentile = float(np.percentile(values, 10.0))
+            location_limit = min(
+                float(np.percentile(values, 20.0)),
+                near_percentile + 8.0,
+            )
+            near = values <= location_limit
+            if np.count_nonzero(near) < 4:
+                continue
+            weights = np.maximum(location_limit - values[near] + 1.0, 1.0)
+            point = np.array(
+                [
+                    np.average(xs[near], weights=weights),
+                    np.average(ys[near], weights=weights),
+                ],
+                dtype=np.float32,
+            )
+            observation = DepthContactObservation(point, near_percentile, area)
+            candidates.append(
+                (
+                    near_percentile > self.near_wall_limit_mm,
+                    -area,
+                    near_percentile,
+                    observation,
+                )
+            )
+
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item[:3])[3]
 
 
 def fit_wall_depth_model(

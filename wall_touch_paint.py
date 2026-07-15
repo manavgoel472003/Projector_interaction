@@ -23,6 +23,7 @@ os.environ["QT_QPA_FONTDIR"] = SYSTEM_FONT_DIR
 from wall_touch_ambient_effects import ConstellationField, MagneticSand
 from wall_touch_core import (
     CORNER_NAMES,
+    DepthContactTracker,
     DepthTouchGate,
     TouchGate,
     WallDepthModel,
@@ -35,7 +36,6 @@ from wall_touch_core import (
     point_in_output,
     projection_near_frame_edge,
     projector_targets,
-    sample_fingertip_depth,
     transform_points,
     validate_camera_quad,
 )
@@ -44,7 +44,7 @@ from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "3.0"
+APP_VERSION = "3.1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
 DEFAULT_CALIBRATION = ROOT / "wall_touch_calibration.json"
@@ -108,9 +108,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--touch-scale-max", type=float, default=1.60)
     parser.add_argument("--touch-dwell-ms", type=int, default=50)
     parser.add_argument("--touch-min-gap-mm", type=float, default=-15.0)
-    parser.add_argument("--touch-max-gap-mm", type=float, default=45.0)
-    parser.add_argument("--depth-calibration-frames", type=int, default=12)
-    parser.add_argument("--depth-sample-radius", type=int, default=7)
+    parser.add_argument("--touch-max-gap-mm", type=float, default=30.0)
+    parser.add_argument("--depth-calibration-frames", type=int, default=45)
+    parser.add_argument("--depth-change-min-mm", type=float, default=15.0)
+    parser.add_argument("--depth-component-min-area", type=int, default=80)
+    parser.add_argument("--depth-noise-multiplier", type=float, default=0.75)
     parser.add_argument("--require-index-extension", action="store_true")
     parser.add_argument("--brush-radius", type=int, default=46)
     parser.add_argument("--paint-alpha", type=float, default=0.46)
@@ -449,9 +451,25 @@ def save_calibration(
     touch_reference_scale: float | None,
     wall_depth_model: WallDepthModel | None = None,
     sensor_mode: str = "rgb",
+    wall_depth_reference: np.ndarray | None = None,
+    wall_depth_noise: np.ndarray | None = None,
 ) -> None:
+    reference_path = depth_reference_path(path)
+    if wall_depth_reference is not None:
+        noise = (
+            np.zeros_like(wall_depth_reference, dtype=np.float32)
+            if wall_depth_noise is None
+            else np.asarray(wall_depth_noise, dtype=np.float32)
+        )
+        np.savez_compressed(
+            reference_path,
+            depth_mm=np.asarray(wall_depth_reference, dtype=np.float32),
+            noise_mm=noise,
+        )
+    elif wall_depth_model is None:
+        reference_path.unlink(missing_ok=True)
     data = {
-        "version": 2,
+        "version": 3,
         "sensor_mode": sensor_mode,
         "camera_identity": camera_identity,
         "camera_frame_size": list(frame_size),
@@ -461,8 +479,13 @@ def save_calibration(
         "corner_order": list(CORNER_NAMES),
         "touch_reference_scale": touch_reference_scale,
         "wall_depth_model": wall_depth_model.to_dict() if wall_depth_model else None,
+        "depth_reference_file": reference_path.name if wall_depth_reference is not None else None,
     }
     path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def depth_reference_path(calibration_path: Path) -> Path:
+    return calibration_path.with_name(f"{calibration_path.stem}.depth.npz")
 
 
 def load_calibration(
@@ -488,8 +511,27 @@ def load_calibration(
         data["output_points"] = np.array(data["output_points"], dtype=np.float32)
         if data.get("wall_depth_model") is not None:
             data["wall_depth_model"] = WallDepthModel.from_dict(data["wall_depth_model"])
+        data["wall_depth_reference"] = None
+        data["wall_depth_noise"] = None
+        reference_file = data.get("depth_reference_file")
+        if reference_file:
+            reference_path = path.parent / Path(reference_file).name
+            with np.load(reference_path, allow_pickle=False) as stored:
+                reference = np.asarray(stored["depth_mm"], dtype=np.float32)
+                noise = (
+                    np.asarray(stored["noise_mm"], dtype=np.float32)
+                    if "noise_mm" in stored.files
+                    else None
+                )
+            expected_shape = (frame_size[1], frame_size[0])
+            if reference.shape != expected_shape:
+                raise ValueError("Saved depth reference has the wrong shape")
+            if noise is not None and noise.shape != expected_shape:
+                raise ValueError("Saved depth noise map has the wrong shape")
+            data["wall_depth_reference"] = reference
+            data["wall_depth_noise"] = noise
         return data
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
@@ -522,7 +564,7 @@ def main() -> None:
         )
         identity = depth_camera.identity
         sensor_mode = "orbbec-depth"
-        first_rgbd = depth_camera.read()
+        first_rgbd = depth_camera.read(timeout_ms=3000)
         frame = first_rgbd.color_bgr
         depth_mm: np.ndarray | None = first_rgbd.depth_mm
     else:
@@ -587,6 +629,10 @@ def main() -> None:
     output_points = saved["output_points"] if saved else output_points
     touch_reference = saved.get("touch_reference_scale") if saved and not depth_enabled else None
     wall_depth_model = saved.get("wall_depth_model") if saved and depth_enabled else None
+    wall_depth_reference = (
+        saved.get("wall_depth_reference") if saved and depth_enabled else None
+    )
+    wall_depth_noise = saved.get("wall_depth_noise") if saved and depth_enabled else None
     matrix = build_homography(camera_points, output_points) if camera_points is not None else None
     detection_roi = camera_detection_roi(camera_points, frame_size) if camera_points is not None else None
     if saved:
@@ -596,8 +642,34 @@ def main() -> None:
     clicks: list[list[float]] = []
     touch_samples: list[float] = []
     wall_depth_samples: list[WallDepthModel] = []
-    collecting_wall_depth = depth_enabled and matrix is not None and wall_depth_model is None
+    wall_depth_frames: list[np.ndarray] = []
+    collecting_wall_depth = (
+        depth_enabled
+        and matrix is not None
+        and (
+            wall_depth_model is None
+            or wall_depth_reference is None
+            or wall_depth_noise is None
+        )
+    )
     collecting_touch = not depth_enabled and matrix is not None and touch_reference is None
+    depth_tracker = (
+        DepthContactTracker(
+            wall_depth_reference,
+            camera_points,
+            wall_noise_mm=wall_depth_noise,
+            minimum_change_mm=args.depth_change_min_mm,
+            minimum_component_area=args.depth_component_min_area,
+            near_wall_limit_mm=args.touch_max_gap_mm + 15.0,
+            noise_multiplier=args.depth_noise_multiplier,
+        )
+        if (
+            wall_depth_reference is not None
+            and wall_depth_noise is not None
+            and camera_points is not None
+        )
+        else None
+    )
     base_canvas = make_base_canvas(*output_size)
     canvas = base_canvas.copy()
     brush = PaintBrush(args.brush_radius, args.paint_alpha)
@@ -642,6 +714,7 @@ def main() -> None:
     geometry_message = ""
     depth_calibration_message = ""
     last_ripple_time = -1e9
+    last_depth_touch_active = False
 
     def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
         del flags, param
@@ -650,7 +723,9 @@ def main() -> None:
             print(f"Geometry {CORNER_NAMES[len(clicks) - 1]}: {x}, {y}")
 
     cv2.setMouseCallback(debug_window, on_mouse)
-    landmarker = create_landmarker(args.model, args.detection_confidence)
+    landmarker = None if depth_enabled else create_landmarker(
+        args.model, args.detection_confidence
+    )
 
     try:
         while True:
@@ -668,8 +743,12 @@ def main() -> None:
                     detection_roi = camera_detection_roi(camera_points, frame_size)
                     touch_reference = None
                     wall_depth_model = None
+                    wall_depth_reference = None
+                    wall_depth_noise = None
+                    depth_tracker = None
                     touch_samples.clear()
                     wall_depth_samples.clear()
+                    wall_depth_frames.clear()
                     collecting_wall_depth = depth_enabled
                     collecting_touch = not depth_enabled
                     smoothed_scale = None
@@ -719,9 +798,30 @@ def main() -> None:
                     depth_calibration_message = str(error)
                 else:
                     wall_depth_samples.append(candidate_wall)
+                    wall_depth_frames.append(depth_mm.copy())
                     depth_calibration_message = ""
                     if len(wall_depth_samples) >= args.depth_calibration_frames:
                         wall_depth_model = combine_wall_depth_models(wall_depth_samples)
+                        depth_stack = np.stack(wall_depth_frames)
+                        masked_depth = np.ma.masked_less(depth_stack, 100.0)
+                        wall_depth_reference = np.ma.median(
+                            masked_depth, axis=0
+                        ).filled(0.0).astype(np.float32)
+                        depth_deviation = np.ma.abs(
+                            masked_depth - wall_depth_reference
+                        )
+                        wall_depth_noise = (
+                            1.4826 * np.ma.median(depth_deviation, axis=0)
+                        ).filled(args.touch_max_gap_mm).astype(np.float32)
+                        depth_tracker = DepthContactTracker(
+                            wall_depth_reference,
+                            camera_points,
+                            wall_noise_mm=wall_depth_noise,
+                            minimum_change_mm=args.depth_change_min_mm,
+                            minimum_component_area=args.depth_component_min_area,
+                            near_wall_limit_mm=args.touch_max_gap_mm + 15.0,
+                            noise_multiplier=args.depth_noise_multiplier,
+                        )
                         collecting_wall_depth = False
                         depth_gate.reset()
                         save_calibration(
@@ -734,6 +834,8 @@ def main() -> None:
                             None,
                             wall_depth_model,
                             sensor_mode,
+                            wall_depth_reference,
+                            wall_depth_noise,
                         )
                         print(
                             "Wall depth learned: "
@@ -741,7 +843,13 @@ def main() -> None:
                             f"{len(wall_depth_samples)} frames."
                         )
             landmarks = None
-            if detection_roi is not None:
+            depth_camera_point = None
+            depth_observation = None
+            if depth_enabled and depth_tracker is not None and depth_mm is not None:
+                depth_observation = depth_tracker.detect(depth_mm)
+                if depth_observation is not None:
+                    depth_camera_point = depth_observation.camera_point
+            elif detection_roi is not None and landmarker is not None:
                 x0, y0, x1, y1 = detection_roi
                 tracking_frame = frame[y0:y1, x0:x1]
                 rgb = cv2.cvtColor(tracking_frame, cv2.COLOR_BGR2RGB)
@@ -759,7 +867,24 @@ def main() -> None:
             gap_mm = None
             extended = False
             inside = False
-            if landmarks is not None and matrix is not None:
+            if depth_observation is not None and matrix is not None:
+                raw_tip = transform_points(
+                    matrix, depth_observation.camera_point.reshape(1, 2)
+                )[0]
+                if smoothed_tip is None:
+                    smoothed_tip = raw_tip.copy()
+                else:
+                    smoothed_tip = 0.45 * smoothed_tip + 0.55 * raw_tip
+                mapped_tip = smoothed_tip.copy()
+                raw_gap_mm = depth_observation.gap_mm
+                if smoothed_gap_mm is None:
+                    smoothed_gap_mm = raw_gap_mm
+                else:
+                    smoothed_gap_mm = 0.45 * smoothed_gap_mm + 0.55 * raw_gap_mm
+                gap_mm = smoothed_gap_mm
+                extended = True
+                inside = point_in_output(mapped_tip, *output_size, margin=4)
+            elif landmarks is not None and matrix is not None:
                 mapped_landmarks = transform_points(matrix, landmarks)
                 raw_tip = mapped_landmarks[8]
                 if smoothed_tip is None:
@@ -773,26 +898,9 @@ def main() -> None:
                 else:
                     smoothed_scale = 0.72 * smoothed_scale + 0.28 * raw_scale
                 scale = smoothed_scale
-                if depth_mm is not None and wall_depth_model is not None:
-                    depth_sample_point = 0.82 * landmarks[8] + 0.18 * landmarks[7]
-                    finger_depth_mm = sample_fingertip_depth(
-                        depth_mm,
-                        depth_sample_point,
-                        radius=args.depth_sample_radius,
-                    )
-                    expected_wall_mm = wall_depth_model.expected_depth(
-                        depth_sample_point, frame_size
-                    )
-                    if finger_depth_mm is not None and np.isfinite(expected_wall_mm):
-                        raw_gap_mm = expected_wall_mm - finger_depth_mm
-                        if smoothed_gap_mm is None:
-                            smoothed_gap_mm = raw_gap_mm
-                        else:
-                            smoothed_gap_mm = 0.58 * smoothed_gap_mm + 0.42 * raw_gap_mm
-                        gap_mm = smoothed_gap_mm
                 extended = index_is_extended(landmarks)
                 inside = point_in_output(mapped_tip, *output_size, margin=4)
-            elif landmarks is None:
+            elif landmarks is None and depth_observation is None:
                 smoothed_tip = None
                 smoothed_gap_mm = None
 
@@ -816,8 +924,8 @@ def main() -> None:
                     point=mapped_tip,
                     timestamp=now,
                     inside=inside,
-                    index_extended=extended or not args.require_index_extension,
-                    calibrated=wall_depth_model is not None and not collecting_wall_depth,
+                    index_extended=True,
+                    calibrated=depth_tracker is not None and not collecting_wall_depth,
                 )
             else:
                 decision = gate.update(
@@ -827,6 +935,12 @@ def main() -> None:
                     inside=inside,
                     index_extended=extended or not args.require_index_extension,
                 )
+
+            if depth_enabled and decision.active != last_depth_touch_active:
+                state = "started" if decision.active else "ended"
+                gap_text = "--" if decision.distance_mm is None else f"{decision.distance_mm:.0f} mm"
+                print(f"Depth touch {state}: wall gap {gap_text}")
+                last_depth_touch_active = decision.active
 
             if collecting_touch and scale is not None and mapped_tip is not None:
                 target = np.array([args.projector_width / 2, args.projector_height / 2], dtype=np.float32)
@@ -916,6 +1030,11 @@ def main() -> None:
                     cv2.putText(debug, str(index + 1), tuple(np.rint(point).astype(int) + (12, -10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 220, 255), 2)
             if landmarks is not None:
                 draw_hand(debug, landmarks, decision.active)
+            elif depth_camera_point is not None:
+                camera_cursor = tuple(np.rint(depth_camera_point).astype(int))
+                cursor_color = (70, 230, 90) if decision.active else (0, 190, 255)
+                cv2.circle(debug, camera_cursor, 13, cursor_color, 3, cv2.LINE_AA)
+                cv2.circle(debug, camera_cursor, 3, cursor_color, -1, cv2.LINE_AA)
 
             if matrix is None:
                 next_corner = CORNER_NAMES[len(clicks)] if len(clicks) < 4 else "processing"
@@ -941,7 +1060,7 @@ def main() -> None:
             elif not depth_enabled and touch_reference is None:
                 status = "TOUCH CALIBRATION NEEDED"
                 detail = "Touch and hold the projected center target"
-            elif depth_enabled and wall_depth_model is None:
+            elif depth_enabled and depth_tracker is None:
                 status = "WALL DEPTH CALIBRATION NEEDED"
                 detail = "Press t and keep the projected wall clear"
             else:
@@ -984,8 +1103,12 @@ def main() -> None:
                     print("Wall depth calibration is already running; keep the projection clear.")
                 elif depth_enabled:
                     wall_depth_samples.clear()
+                    wall_depth_frames.clear()
                     collecting_wall_depth = True
                     wall_depth_model = None
+                    wall_depth_reference = None
+                    wall_depth_noise = None
+                    depth_tracker = None
                     smoothed_gap_mm = None
                     depth_gate.reset()
                     save_calibration(
@@ -1016,8 +1139,12 @@ def main() -> None:
                 detection_roi = None
                 touch_reference = None
                 wall_depth_model = None
+                wall_depth_reference = None
+                wall_depth_noise = None
+                depth_tracker = None
                 touch_samples.clear()
                 wall_depth_samples.clear()
+                wall_depth_frames.clear()
                 collecting_touch = False
                 collecting_wall_depth = False
                 smoothed_tip = None
@@ -1031,6 +1158,7 @@ def main() -> None:
                 for effect in reactive_effects:
                     effect.clear()
                 args.calibration.unlink(missing_ok=True)
+                depth_reference_path(args.calibration).unlink(missing_ok=True)
                 print("Artwork and calibration reset. Click the four projected targets.")
             elif key == ord("f"):
                 fullscreen = not fullscreen
@@ -1040,7 +1168,8 @@ def main() -> None:
                     cv2.resizeWindow(projector_window, args.projector_width, args.projector_height)
                     cv2.moveWindow(projector_window, args.projector_x, args.projector_y)
     finally:
-        landmarker.close()
+        if landmarker is not None:
+            landmarker.close()
         if depth_camera is not None:
             depth_camera.release()
         if cap is not None:

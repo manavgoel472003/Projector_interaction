@@ -143,7 +143,11 @@ class OrbbecCamera:
         )
 
     def read(self, timeout_ms: int = 1000) -> RGBDFrame:
-        frames = self.pipeline.wait_for_frames(timeout_ms)
+        frames = None
+        for _ in range(2):
+            frames = self.pipeline.wait_for_frames(timeout_ms)
+            if frames is not None:
+                break
         if frames is None:
             raise RuntimeError("Orbbec camera did not return synchronized frames")
         color_frame = frames.get_color_frame()
