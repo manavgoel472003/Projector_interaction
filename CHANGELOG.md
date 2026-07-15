@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.4.0
+
+- Add a two-player Tic Tac Toe mode with large projected touch cells,
+  alternating X/O turns, win and draw detection, and persistent round scores.
+- Debounce wall contact so a held hand produces exactly one move and must be
+  released before another cell can be selected.
+- Add luminous marks, winning-line highlights, move animation, and a projected
+  new-round control that can be touched directly on the wall.
+- Register the game as mode `7` and make `c` reset its board and scores along
+  with the other visual modes.
+
 ## 3.3.0
 
 - Replace fingertip-sized Orbbec localization with the centroid of the largest

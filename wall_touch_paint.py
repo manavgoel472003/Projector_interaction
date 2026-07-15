@@ -44,11 +44,12 @@ from wall_touch_core import (
     validate_camera_quad,
 )
 from wall_touch_effects import PulseGrid, WatercolorPool
+from wall_touch_games import TicTacToe
 from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
 
 
 ROOT = Path(__file__).resolve().parent
-APP_VERSION = "3.3"
+APP_VERSION = "3.4"
 DEPTH_TOUCH_MODE = "hand-contact-v1"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
@@ -62,6 +63,7 @@ MODE_ORDER = (
     "pulse",
     "constellation",
     "sand",
+    "tic-tac-toe",
 )
 MODE_KEYS = {ord(str(index + 1)): mode for index, mode in enumerate(MODE_ORDER)}
 
@@ -774,12 +776,14 @@ def main() -> None:
     pulse = PulseGrid(*output_size)
     constellation = ConstellationField(*output_size)
     sand = MagneticSand(*output_size)
+    tic_tac_toe = TicTacToe(*output_size)
     reactive_effects = (
         spill,
         ripple,
         pulse,
         constellation,
         sand,
+        tic_tac_toe,
     )
     interaction_mode = args.mode
     gate = TouchGate(
@@ -1174,7 +1178,9 @@ def main() -> None:
                     )
                     print(f"Touch plane learned: reference hand scale={touch_reference:.1f}")
 
-            if decision.active and mapped_tip is not None:
+            if interaction_mode == "tic-tac-toe":
+                tic_tac_toe.update(mapped_tip, decision.active, now)
+            elif decision.active and mapped_tip is not None:
                 color = paint_color(mapped_tip, *output_size)
                 if interaction_mode == "spill":
                     spill.add_drop(mapped_tip, color, args.brush_radius)
@@ -1206,6 +1212,8 @@ def main() -> None:
             elif interaction_mode == "sand":
                 sand.step(delta)
                 art_frame = sand.render()
+            elif interaction_mode == "tic-tac-toe":
+                art_frame = tic_tac_toe.render(now)
             else:
                 art_frame = canvas.copy()
 
@@ -1238,7 +1246,12 @@ def main() -> None:
                 elif mapped_tip is not None and inside:
                     point = tuple(np.rint(mapped_tip).astype(int))
                     cursor_color = (70, 220, 90) if decision.active else (30, 190, 255)
-                    cv2.circle(projector_frame, point, args.brush_radius + 8, cursor_color, 5, cv2.LINE_AA)
+                    cursor_radius = (
+                        28
+                        if interaction_mode == "tic-tac-toe"
+                        else args.brush_radius + 8
+                    )
+                    cv2.circle(projector_frame, point, cursor_radius, cursor_color, 5, cv2.LINE_AA)
 
             if camera_points is not None:
                 cv2.polylines(debug, [np.rint(camera_points).astype(np.int32)], True, (80, 235, 100), 3)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wall-touch-demo"
-version = "3.3.0"
+version = "3.4.0"
 description = "Projector wall interaction using calibrated Orbbec RGB-D or external RGB cameras"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,6 +23,7 @@ py-modules = [
   "wall_touch_ambient_effects",
   "wall_touch_core",
   "wall_touch_effects",
+  "wall_touch_games",
   "wall_touch_paint",
   "wall_touch_orbbec",
 ]

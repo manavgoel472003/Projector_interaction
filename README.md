@@ -17,6 +17,7 @@ known PC webcam as its RGB fallback.
 - `pulse`: layered luminous rings across a reactive jewel-tone grid
 - `constellation`: fading stars connected by fine luminous lines
 - `sand`: metallic grains attracted into touch-driven vortices
+- `tic-tac-toe`: two-player touch board with scores and projected round reset
 
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
 sensor noise. Five guided open-hand presses then learn the real contact gap and
@@ -118,7 +119,7 @@ details.
 
 | Key | Action |
 | --- | --- |
-| `1`-`6` | Select any mode directly |
+| `1`-`7` | Select any mode directly; `7` opens Tic Tac Toe |
 | `]` / `m` | Next mode |
 | `[` | Previous mode |
 | `c` | Clear artwork and keep calibration |
@@ -143,6 +144,7 @@ wall_touch_orbbec.py  synchronized Orbbec RGB-D capture
 wall_touch_core.py     geometry, depth-background tracking, and touch gates
 wall_touch_effects.py  original visual simulations
 wall_touch_ambient_effects.py  ambient and field simulations
+wall_touch_games.py    touch-controlled games and press debouncing
 tests/                 deterministic unit tests
 scripts/               model setup utility
 docs/                  hardware and calibration notes

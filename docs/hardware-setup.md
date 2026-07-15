@@ -93,7 +93,7 @@ an expanded crop around it for hand tracking.
 
 - `]` or `m`: select the next reactive mode
 - `[`: select the previous reactive mode
-- `1`-`6`: select any mode directly
+- `1`-`7`: select any mode directly; `7` selects Tic Tac Toe
 - `c`: clear all artwork while keeping the current calibration
 - `t`: relearn wall depth in Orbbec mode or hand size in RGB fallback
 - `r`: clear artwork and discard calibration so you can choose new projection points
@@ -110,7 +110,7 @@ In spill mode, each touch pours pigment into a full-bleed water surface. Horizon
 touch position chooses the hue. Pigment spreads, swirls, mixes with existing
 colors, and creates a small surface ripple.
 
-The six modes are:
+The seven modes are:
 
 1. `paint`: soft color-mixing brush strokes
 2. `spill`: watercolor pigment diffusing across a full-bleed surface
@@ -118,6 +118,12 @@ The six modes are:
 4. `pulse`: expanding colored waves lighting a reactive grid
 5. `constellation`: connected fading stars
 6. `sand`: touch-attracted metallic grains
+7. `tic-tac-toe`: a two-player luminous board with persistent round scores
+
+In Tic Tac Toe, touch one cell and lift your hand before selecting the next
+cell. X and O alternate automatically. Touch the circular-arrow control beside
+the board to start another round while preserving the score; `c` clears both
+the board and scores.
 
 Geometry is saved in `wall_touch_calibration.json`. The empty-wall depth and
 noise map are saved in `wall_touch_calibration.depth.npz`. Start without
