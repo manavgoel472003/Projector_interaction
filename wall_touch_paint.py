@@ -27,6 +27,7 @@ from wall_touch_core import (
     DepthContactLock,
     DepthContactObservation,
     DepthContactTracker,
+    SpatialTouchCalibration,
     DepthTouchProfile,
     DepthTouchGate,
     TouchGate,
@@ -39,6 +40,7 @@ from wall_touch_core import (
     hand_plane_scale,
     index_is_extended,
     point_in_output,
+    sample_fingertip_depth,
     projection_near_frame_edge,
     projector_targets,
     transform_points,
@@ -48,11 +50,12 @@ from wall_touch_effects import PulseGrid, WatercolorPool
 from wall_touch_games import TicTacToe
 from wall_touch_orbit_keeper import OrbitKeeper
 from wall_touch_orbbec import OrbbecCamera, orbbec_device_count
+from wall_touch_realsense import RealSenseCamera, realsense_device_count
 
 
 ROOT = Path(__file__).resolve().parent
 APP_VERSION = "3.5.1"
-DEPTH_TOUCH_MODE = "hand-contact-v1"
+DEPTH_TOUCH_MODE = "fingertip-contact-plane-v3"
 DEFAULT_CAMERA = "auto"
 DEFAULT_MODEL = ROOT / "models/hand_landmarker.task"
 DEFAULT_CALIBRATION = ROOT / "wall_touch_calibration.json"
@@ -86,9 +89,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--sensor",
-        choices=("auto", "orbbec", "rgb"),
+        choices=("auto", "realsense", "orbbec", "rgb"),
         default="auto",
-        help="Prefer Orbbec depth when available, or force one capture backend.",
+        help="Prefer RealSense/Orbbec depth when available, or force one capture backend.",
+    )
+    parser.add_argument(
+        "--close-bottom",
+        action="store_true",
+        help=(
+            "Preset for a RealSense mounted close to the wall below the projection "
+            "and aimed upward."
+        ),
+    )
+    parser.add_argument(
+        "--realsense-preset",
+        choices=("high-accuracy", "high-density"),
+        default="high-accuracy",
+        help="RealSense stereo preset (close-bottom forces high-density).",
     )
     parser.add_argument(
         "--camera",
@@ -115,16 +132,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--recalibrate-depth",
         action="store_true",
-        help="Keep saved projection points but relearn the Orbbec wall and hand contact.",
+        help="Keep saved projection points but relearn the RGB-D wall and hand contact.",
     )
     parser.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--touch-samples", type=int, default=24)
     parser.add_argument("--touch-scale-min", type=float, default=0.50)
     parser.add_argument("--touch-scale-max", type=float, default=1.60)
-    parser.add_argument("--touch-dwell-ms", type=int, default=50)
+    parser.add_argument(
+        "--touch-dwell-ms",
+        type=int,
+        default=25,
+        help="Contact hold time before activation (default: 25 ms).",
+    )
     parser.add_argument("--touch-min-gap-mm", type=float, default=-15.0)
     parser.add_argument("--touch-max-gap-mm", type=float, default=30.0)
+    parser.add_argument(
+        "--touch-plane-tolerance-mm",
+        type=float,
+        default=5.0,
+        help=(
+            "Maximum absolute angle-corrected distance from calibrated contact "
+            "(default: 5 mm). Lower is closer/stricter."
+        ),
+    )
+    parser.add_argument(
+        "--fingertip-depth-radius",
+        type=int,
+        default=7,
+        help="Radius of the aligned depth patch sampled around the fingertip.",
+    )
     parser.add_argument("--depth-calibration-frames", type=int, default=45)
     parser.add_argument("--depth-change-min-mm", type=float, default=15.0)
     parser.add_argument("--depth-component-min-area", type=int, default=80)
@@ -137,11 +174,80 @@ def parse_args() -> argparse.Namespace:
         help="Largest wall gap accepted while learning a guided hand press.",
     )
     parser.add_argument("--require-index-extension", action="store_true")
+    parser.add_argument(
+        "--legacy-depth-blob",
+        action="store_true",
+        help=(
+            "Use the old depth blob tracker and guided-touch calibration instead of "
+            "MediaPipe fingertip detection fused with the wall-depth plane."
+        ),
+    )
     parser.add_argument("--brush-radius", type=int, default=46)
     parser.add_argument("--paint-alpha", type=float, default=0.46)
     parser.add_argument("--mode", choices=MODE_ORDER, default="spill")
     parser.add_argument("--detection-confidence", type=float, default=0.40)
+    parser.add_argument(
+        "--detection-size",
+        type=int,
+        default=384,
+        help=(
+            "Target long-side (px) the detection crop is resized to before MediaPipe. "
+            "A tight/far crop is upscaled so the hand is big enough to detect; a large "
+            "crop is downscaled to cut lag. Lower = faster, higher = longer range."
+        ),
+    )
+    parser.add_argument(
+        "--depth-roi",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use the near-wall depth foreground to crop the color image tightly around "
+            "the hand before MediaPipe (depth sees the hand regardless of its color pixel "
+            "size, so this greatly extends range when the camera is far). Depth mode only."
+        ),
+    )
+    parser.add_argument(
+        "--enhance-contrast",
+        action="store_true",
+        help=(
+            "CLAHE-normalize the detection ROI so a brightly projected / light-colored "
+            "wall does not wash the hand out for MediaPipe."
+        ),
+    )
+    parser.add_argument(
+        "--dual-detect",
+        action="store_true",
+        help=(
+            "When the normal detector finds no hand, retry on the inverted (negative) "
+            "ROI. Helps on light/washed-out walls where the hand only stands out in the "
+            "negative. Runs only on missed frames, so it adds no lag while a hand is tracked."
+        ),
+    )
     return parser.parse_args()
+
+
+def apply_close_bottom_preset(args: argparse.Namespace) -> None:
+    if not args.close_bottom:
+        return
+    if args.sensor == "auto":
+        args.sensor = "realsense"
+    elif args.sensor != "realsense":
+        raise ValueError("--close-bottom requires --sensor realsense")
+    args.realsense_preset = "high-density"
+    args.camera_width = args.camera_width or 640
+    args.camera_height = args.camera_height or 480
+    args.camera_fps = args.camera_fps or 30
+    args.depth_calibration_frames = max(args.depth_calibration_frames, 60)
+    args.depth_touch_samples = max(args.depth_touch_samples, 14)
+    args.touch_plane_tolerance_mm = max(args.touch_plane_tolerance_mm, 12.0)
+    args.touch_dwell_ms = 0
+    args.fingertip_depth_radius = max(args.fingertip_depth_radius, 12)
+    # Keep the detector well-fed at close range (was --detection-scale >= 0.85 before
+    # that flag became the target-size --detection-size).
+    args.detection_size = max(args.detection_size, 448)
+    args.require_index_extension = False
+    args.enhance_contrast = True
+    args.dual_detect = True
 
 
 def camera_name(device_path: Path) -> str:
@@ -451,6 +557,20 @@ def guided_depth_touch_targets(width: int, height: int) -> np.ndarray:
     )
 
 
+def guided_corner_touch_targets(width: int, height: int) -> np.ndarray:
+    inset_x = int(width * 0.18)
+    inset_y = int(height * 0.18)
+    return np.array(
+        [
+            [inset_x, inset_y],
+            [width - inset_x, inset_y],
+            [width - inset_x, height - inset_y],
+            [inset_x, height - inset_y],
+        ],
+        dtype=np.float32,
+    )
+
+
 def camera_landmarks(
     result: object,
     frame_shape: tuple[int, ...],
@@ -492,6 +612,7 @@ def save_calibration(
     wall_depth_reference: np.ndarray | None = None,
     wall_depth_noise: np.ndarray | None = None,
     depth_touch_profile: DepthTouchProfile | None = None,
+    spatial_touch_calibration: SpatialTouchCalibration | None = None,
 ) -> None:
     reference_path = depth_reference_path(path)
     if wall_depth_reference is not None:
@@ -510,7 +631,7 @@ def save_calibration(
     data = {
         "version": 4,
         "sensor_mode": sensor_mode,
-        "depth_touch_mode": DEPTH_TOUCH_MODE if sensor_mode == "orbbec-depth" else None,
+        "depth_touch_mode": DEPTH_TOUCH_MODE if sensor_mode.endswith("-depth") else None,
         "camera_identity": camera_identity,
         "camera_frame_size": list(frame_size),
         "projector_output_size": list(output_size),
@@ -521,6 +642,11 @@ def save_calibration(
         "wall_depth_model": wall_depth_model.to_dict() if wall_depth_model else None,
         "depth_reference_file": reference_path.name if wall_depth_reference is not None else None,
         "depth_touch_profile": depth_touch_profile.to_dict() if depth_touch_profile else None,
+        "spatial_touch_calibration": (
+            spatial_touch_calibration.to_dict()
+            if spatial_touch_calibration is not None
+            else None
+        ),
     }
     path.write_text(json.dumps(data, indent=2) + "\n")
 
@@ -555,6 +681,11 @@ def load_calibration(
         data["depth_touch_profile"] = (
             DepthTouchProfile.from_dict(data["depth_touch_profile"])
             if data.get("depth_touch_profile") is not None
+            else None
+        )
+        data["spatial_touch_calibration"] = (
+            SpatialTouchCalibration.from_dict(data["spatial_touch_calibration"])
+            if data.get("spatial_touch_calibration") is not None
             else None
         )
         data["wall_depth_reference"] = None
@@ -598,11 +729,98 @@ def create_landmarker(model_path: Path, confidence: float):
     return mp.tasks.vision.HandLandmarker.create_from_options(options)
 
 
+def fingertip_wall_gap_mm(
+    wall_depth_reference: np.ndarray,
+    depth_mm: np.ndarray,
+    camera_point: np.ndarray,
+    radius: int = 7,
+) -> float | None:
+    """Wall-minus-fingertip depth (mm) at an aligned camera pixel.
+
+    Positive means the fingertip is in front of the learned wall plane. The
+    capture backend aligns depth to color, so a MediaPipe landmark pixel indexes
+    the same location in ``depth_mm`` and ``wall_depth_reference``.
+    """
+    finger = sample_fingertip_depth(depth_mm, camera_point, radius=radius, percentile=25.0)
+    wall = sample_fingertip_depth(
+        wall_depth_reference, camera_point, radius=radius, percentile=50.0
+    )
+    if finger is None or wall is None:
+        return None
+    return float(wall - finger)
+
+
+def depth_foreground_roi(
+    wall_depth_reference: np.ndarray,
+    depth_mm: np.ndarray,
+    base_roi: tuple[int, int, int, int],
+    min_gap_mm: float = 20.0,
+    max_gap_mm: float = 400.0,
+    margin: float = 0.35,
+    min_pixels: int = 60,
+) -> tuple[int, int, int, int] | None:
+    """Tight bounding box (in full-frame pixels) around the near-wall foreground.
+
+    Uses depth to localize the hand/arm in front of the wall inside ``base_roi``.
+    Depth detects the hand regardless of how small it is in the color image, so
+    cropping MediaPipe to this box lets the hand fill the detector's input and
+    extends usable range when the camera is far. Returns ``None`` if nothing is
+    clearly in front of the wall (caller should fall back to ``base_roi``).
+    """
+    x0, y0, x1, y1 = base_roi
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    wall = wall_depth_reference[y0:y1, x0:x1]
+    current = depth_mm[y0:y1, x0:x1]
+    valid = (wall >= 100.0) & (current >= 100.0)
+    gap = wall - current
+    foreground = valid & (gap >= min_gap_mm) & (gap <= max_gap_mm)
+    ys, xs = np.nonzero(foreground)
+    if xs.size < min_pixels:
+        return None
+    # Percentile bounds reject isolated depth-noise specks that a raw min/max
+    # would let inflate the box.
+    bx0, bx1 = np.percentile(xs, 1.0), np.percentile(xs, 99.0)
+    by0, by1 = np.percentile(ys, 1.0), np.percentile(ys, 99.0)
+    pad_x = int((bx1 - bx0) * margin) + 12
+    pad_y = int((by1 - by0) * margin) + 12
+    fx0 = max(x0, x0 + int(bx0) - pad_x)
+    fy0 = max(y0, y0 + int(by0) - pad_y)
+    fx1 = min(x1, x0 + int(bx1) + pad_x)
+    fy1 = min(y1, y0 + int(by1) + pad_y)
+    if fx1 - fx0 < 2 or fy1 - fy0 < 2:
+        return None
+    return fx0, fy0, fx1, fy1
+
+
 def main() -> None:
     args = parse_args()
-    depth_camera: OrbbecCamera | None = None
+    apply_close_bottom_preset(args)
+    if args.touch_plane_tolerance_mm <= 0:
+        raise ValueError("--touch-plane-tolerance-mm must be positive")
+    if args.touch_dwell_ms < 0:
+        raise ValueError("--touch-dwell-ms cannot be negative")
+    if args.fingertip_depth_radius < 1:
+        raise ValueError("--fingertip-depth-radius must be positive")
+    depth_camera: RealSenseCamera | OrbbecCamera | None = None
     cap: cv2.VideoCapture | None = None
-    if args.sensor in ("auto", "orbbec") and orbbec_device_count() > 0:
+    if args.sensor in ("auto", "realsense") and realsense_device_count() > 0:
+        depth_camera = RealSenseCamera(
+            preferred_width=args.camera_width or 1280,
+            preferred_height=args.camera_height or 720,
+            fps=args.camera_fps or 30,
+            depth_preset=args.realsense_preset,
+        )
+        identity = depth_camera.identity
+        sensor_mode = (
+            "realsense-close-bottom-depth"
+            if args.close_bottom
+            else "realsense-depth"
+        )
+        first_rgbd = depth_camera.read(timeout_ms=3000)
+        frame = first_rgbd.color_bgr
+        depth_mm: np.ndarray | None = first_rgbd.depth_mm
+    elif args.sensor in ("auto", "orbbec") and orbbec_device_count() > 0:
         depth_camera = OrbbecCamera(
             preferred_width=args.camera_width or 1280,
             preferred_height=args.camera_height or 720,
@@ -614,6 +832,11 @@ def main() -> None:
         frame = first_rgbd.color_bgr
         depth_mm: np.ndarray | None = first_rgbd.depth_mm
     else:
+        if args.sensor == "realsense":
+            raise RuntimeError(
+                "No RealSense camera is available. Confirm it appears in lsusb, "
+                "reconnect its USB 3 data cable, and install pyrealsense2."
+            )
         if args.sensor == "orbbec":
             raise RuntimeError(
                 "No Orbbec camera is available. The Gemini 336 must appear as "
@@ -638,6 +861,11 @@ def main() -> None:
 
     depth_enabled = depth_camera is not None
     print(f"Wall Touch Demo v{APP_VERSION}")
+    if args.close_bottom:
+        print(
+            "Placement preset: close-bottom "
+            "(640x480 high-density depth, 60 wall frames, +/-12 mm touch)"
+        )
     if depth_camera is not None:
         print(f"Depth camera: {identity}")
         print(f"Camera stream: {depth_camera.stream_description}")
@@ -682,14 +910,18 @@ def main() -> None:
     depth_touch_profile = (
         saved.get("depth_touch_profile") if saved and depth_enabled else None
     )
+    spatial_touch_calibration = (
+        saved.get("spatial_touch_calibration") if saved and depth_enabled else None
+    )
     if (
-        depth_touch_profile is not None
+        (depth_touch_profile is not None or spatial_touch_calibration is not None)
         and saved.get("depth_touch_mode") != DEPTH_TOUCH_MODE
     ):
         depth_touch_profile = None
+        spatial_touch_calibration = None
         print(
-            "The saved touch profile used the old fingertip contact model. "
-            "Wall geometry is being kept; touch will be relearned for an open hand."
+            "The saved touch profile used an older contact model. Wall geometry "
+            "is being kept; four-point touch calibration will be relearned."
         )
     if depth_touch_profile is not None:
         tightened_profile = depth_touch_profile.tightened(
@@ -706,6 +938,7 @@ def main() -> None:
         wall_depth_reference = None
         wall_depth_noise = None
         depth_touch_profile = None
+        spatial_touch_calibration = None
         print("Keeping projection points; depth and guided touch will be recalibrated.")
     matrix = build_homography(camera_points, output_points) if camera_points is not None else None
     detection_roi = camera_detection_roi(camera_points, frame_size) if camera_points is not None else None
@@ -719,8 +952,16 @@ def main() -> None:
     wall_depth_frames: list[np.ndarray] = []
     guided_touch_samples: list[DepthContactObservation] = []
     current_target_samples: list[DepthContactObservation] = []
+    fingertip_touch_points: list[np.ndarray] = []
+    fingertip_touch_gaps: list[float] = []
+    current_fingertip_points: list[np.ndarray] = []
+    current_fingertip_gaps: list[float] = []
     depth_touch_target_index = 0
-    depth_touch_targets = guided_depth_touch_targets(*output_size)
+    depth_touch_targets = (
+        guided_depth_touch_targets(*output_size)
+        if args.legacy_depth_blob
+        else guided_corner_touch_targets(*output_size)
+    )
     collecting_wall_depth = (
         depth_enabled
         and matrix is not None
@@ -752,7 +993,10 @@ def main() -> None:
         depth_enabled
         and matrix is not None
         and depth_tracker is not None
-        and depth_touch_profile is None
+        and (
+            (args.legacy_depth_blob and depth_touch_profile is None)
+            or (not args.legacy_depth_blob and spatial_touch_calibration is None)
+        )
         and not collecting_wall_depth
     )
     depth_lock = (
@@ -761,10 +1005,16 @@ def main() -> None:
         else None
     )
     if collecting_depth_touch:
-        print(
-            "Guided hand calibration needed. Center an open hand on each target "
-            "and press it against the wall."
-        )
+        if args.legacy_depth_blob:
+            print(
+                "Guided hand calibration needed. Center an open hand on each target "
+                "and press it against the wall."
+            )
+        else:
+            print(
+                "Four-point touch calibration needed. Touch each corner target "
+                "with a straight index finger."
+            )
     base_canvas = make_base_canvas(*output_size)
     canvas = base_canvas.copy()
     brush = PaintBrush(args.brush_radius, args.paint_alpha)
@@ -804,11 +1054,21 @@ def main() -> None:
         minimum_gap_mm=(
             depth_touch_profile.minimum_gap_mm
             if depth_touch_profile is not None
+            else max(
+                args.touch_min_gap_mm,
+                -args.touch_plane_tolerance_mm,
+            )
+            if spatial_touch_calibration is not None
             else args.touch_min_gap_mm
         ),
         maximum_gap_mm=(
             depth_touch_profile.maximum_gap_mm
             if depth_touch_profile is not None
+            else min(
+                args.touch_max_gap_mm,
+                args.touch_plane_tolerance_mm,
+            )
+            if spatial_touch_calibration is not None
             else args.touch_max_gap_mm
         ),
         dwell_seconds=args.touch_dwell_ms / 1000.0,
@@ -817,6 +1077,7 @@ def main() -> None:
     smoothed_scale: float | None = None
     smoothed_gap_mm: float | None = None
     last_timestamp_ms = 0
+    last_timestamp_ms_alt = 0
     last_frame_time = time.monotonic()
     fps_history: deque[float] = deque(maxlen=30)
     fullscreen = not args.windowed
@@ -833,8 +1094,21 @@ def main() -> None:
             print(f"Geometry {CORNER_NAMES[len(clicks) - 1]}: {x}, {y}")
 
     cv2.setMouseCallback(debug_window, on_mouse)
-    landmarker = None if depth_enabled else create_landmarker(
+    landmarker = None if (depth_enabled and args.legacy_depth_blob) else create_landmarker(
         args.model, args.detection_confidence
+    )
+    detection_clahe = (
+        cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        if args.enhance_contrast
+        else None
+    )
+    # Separate instance for the inverted-image fallback: MediaPipe VIDEO mode keeps
+    # per-stream tracking state, so the negative pass needs its own landmarker and
+    # its own monotonic timestamp counter.
+    landmarker_alt = (
+        create_landmarker(args.model, args.detection_confidence)
+        if (landmarker is not None and args.dual_detect)
+        else None
     )
 
     try:
@@ -856,6 +1130,7 @@ def main() -> None:
                     wall_depth_reference = None
                     wall_depth_noise = None
                     depth_touch_profile = None
+                    spatial_touch_calibration = None
                     depth_tracker = None
                     depth_lock = None
                     touch_samples.clear()
@@ -863,6 +1138,10 @@ def main() -> None:
                     wall_depth_frames.clear()
                     guided_touch_samples.clear()
                     current_target_samples.clear()
+                    fingertip_touch_points.clear()
+                    fingertip_touch_gaps.clear()
+                    current_fingertip_points.clear()
+                    current_fingertip_gaps.clear()
                     depth_touch_target_index = 0
                     collecting_wall_depth = depth_enabled
                     collecting_depth_touch = False
@@ -942,6 +1221,10 @@ def main() -> None:
                         collecting_depth_touch = True
                         guided_touch_samples.clear()
                         current_target_samples.clear()
+                        fingertip_touch_points.clear()
+                        fingertip_touch_gaps.clear()
+                        current_fingertip_points.clear()
+                        current_fingertip_gaps.clear()
                         depth_touch_target_index = 0
                         depth_gate.reset()
                         save_calibration(
@@ -962,15 +1245,26 @@ def main() -> None:
                             f"{wall_depth_model.rmse_mm:.1f} mm RMSE from "
                             f"{len(wall_depth_samples)} frames."
                         )
-                        print(
-                            "Guided hand calibration started. Center an open hand on each "
-                            "target and press it against the wall."
-                        )
+                        if args.legacy_depth_blob:
+                            print(
+                                "Guided hand calibration started. Center an open hand on each "
+                                "target and press it against the wall."
+                            )
+                        else:
+                            print(
+                                "Wall depth learned. Touch the four corner targets with "
+                                "a straight index finger to calibrate the angled plane."
+                            )
             landmarks = None
             depth_camera_point = None
             depth_observation = None
             depth_observations: list[DepthContactObservation] = []
-            if depth_enabled and depth_tracker is not None and depth_mm is not None:
+            if (
+                depth_enabled
+                and args.legacy_depth_blob
+                and depth_tracker is not None
+                and depth_mm is not None
+            ):
                 depth_observations = depth_tracker.observations(depth_mm)
                 if collecting_depth_touch and matrix is not None:
                     target_output = depth_touch_targets[depth_touch_target_index]
@@ -1075,16 +1369,69 @@ def main() -> None:
                 if depth_observation is not None:
                     depth_camera_point = depth_observation.camera_point
             elif detection_roi is not None and landmarker is not None:
-                x0, y0, x1, y1 = detection_roi
+                # Prefer a tight, depth-localized crop: depth sees the hand no matter
+                # how small it is in color, so cropping to it lets a far hand fill the
+                # detector and greatly extends usable range.
+                active_roi = detection_roi
+                if (
+                    args.depth_roi
+                    and depth_enabled
+                    and depth_mm is not None
+                    and wall_depth_reference is not None
+                ):
+                    guided_roi = depth_foreground_roi(
+                        wall_depth_reference, depth_mm, detection_roi
+                    )
+                    if guided_roi is not None:
+                        active_roi = guided_roi
+                x0, y0, x1, y1 = active_roi
                 tracking_frame = frame[y0:y1, x0:x1]
-                rgb = cv2.cvtColor(tracking_frame, cv2.COLOR_BGR2RGB)
+                # Resize the crop so its long side matches --detection-size: upscale a
+                # tight/far crop so the hand is big enough to detect, downscale a large
+                # one to cut lag. Landmarks are normalized, so mapping back is unaffected.
+                detect_image = tracking_frame
+                long_side = max(tracking_frame.shape[0], tracking_frame.shape[1])
+                if long_side > 0 and args.detection_size > 0:
+                    det_scale = min(args.detection_size / long_side, 4.0)
+                    if abs(det_scale - 1.0) > 0.02:
+                        detect_image = cv2.resize(
+                            tracking_frame,
+                            None,
+                            fx=det_scale,
+                            fy=det_scale,
+                            interpolation=cv2.INTER_AREA if det_scale < 1.0 else cv2.INTER_LINEAR,
+                        )
+                if detection_clahe is not None:
+                    lab = cv2.cvtColor(detect_image, cv2.COLOR_BGR2LAB)
+                    channels = list(cv2.split(lab))
+                    channels[0] = detection_clahe.apply(channels[0])
+                    detect_image = cv2.cvtColor(cv2.merge(channels), cv2.COLOR_LAB2BGR)
+                rgb = cv2.cvtColor(detect_image, cv2.COLOR_BGR2RGB)
                 timestamp_ms = max(last_timestamp_ms + 1, int(now * 1000))
                 last_timestamp_ms = timestamp_ms
                 result = landmarker.detect_for_video(
                     mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb)),
                     timestamp_ms,
                 )
+                # Landmarks are normalized, so map them back with the original ROI
+                # shape regardless of the downscale used for inference.
                 landmarks = camera_landmarks(result, tracking_frame.shape, (x0, y0))
+                if landmarks is None and landmarker_alt is not None:
+                    # Retry on the negative image: on a bright/washed wall the hand
+                    # often only separates from the background once light and dark swap.
+                    rgb_inv = np.ascontiguousarray(255 - rgb)
+                    timestamp_ms_alt = max(last_timestamp_ms_alt + 1, int(now * 1000))
+                    last_timestamp_ms_alt = timestamp_ms_alt
+                    result_alt = landmarker_alt.detect_for_video(
+                        mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_inv),
+                        timestamp_ms_alt,
+                    )
+                    landmarks = camera_landmarks(result_alt, tracking_frame.shape, (x0, y0))
+                    if landmarks is not None:
+                        cv2.putText(
+                            debug, "NEG", (x0 + 4, y0 + 18),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (60, 200, 255), 2, cv2.LINE_AA,
+                        )
                 cv2.rectangle(debug, (x0, y0), (x1 - 1, y1 - 1), (210, 150, 40), 1)
             mapped_landmarks = None
             mapped_tip = None
@@ -1092,7 +1439,150 @@ def main() -> None:
             gap_mm = None
             extended = False
             inside = False
-            if depth_observation is not None and matrix is not None:
+            if (
+                depth_enabled
+                and not args.legacy_depth_blob
+                and landmarks is not None
+                and matrix is not None
+            ):
+                mapped_landmarks = transform_points(matrix, landmarks)
+                raw_tip = mapped_landmarks[8]
+                if smoothed_tip is None:
+                    smoothed_tip = raw_tip.copy()
+                else:
+                    smoothed_tip = 0.35 * smoothed_tip + 0.65 * raw_tip
+                mapped_tip = smoothed_tip.copy()
+                raw_gap_mm = (
+                    fingertip_wall_gap_mm(
+                        wall_depth_reference,
+                        depth_mm,
+                        landmarks[8],
+                        radius=args.fingertip_depth_radius,
+                    )
+                    if (wall_depth_reference is not None and depth_mm is not None)
+                    else None
+                )
+                extended = index_is_extended(landmarks)
+                if (
+                    collecting_depth_touch
+                    and raw_gap_mm is not None
+                    and extended
+                    and args.touch_min_gap_mm <= raw_gap_mm
+                    <= args.depth_calibration_max_gap_mm
+                ):
+                    target = depth_touch_targets[depth_touch_target_index]
+                    target_distance = float(np.linalg.norm(raw_tip - target))
+                    if target_distance <= min(output_size) * 0.10:
+                        current_fingertip_points.append(landmarks[8].copy())
+                        current_fingertip_gaps.append(float(raw_gap_mm))
+                        if len(current_fingertip_points) > args.depth_touch_samples:
+                            current_fingertip_points.pop(0)
+                            current_fingertip_gaps.pop(0)
+                        if len(current_fingertip_points) == 1:
+                            print(
+                                f"Corner touch {depth_touch_target_index + 1}: "
+                                f"contact seen at raw gap {raw_gap_mm:.1f} mm."
+                            )
+                        point_window = np.stack(current_fingertip_points)
+                        gap_window = np.asarray(current_fingertip_gaps)
+                        point_center = np.median(point_window, axis=0)
+                        stable_contact = bool(
+                            len(current_fingertip_points) >= args.depth_touch_samples
+                            and np.max(
+                                np.linalg.norm(point_window - point_center, axis=1)
+                            )
+                            <= 12.0
+                            and np.percentile(gap_window, 90)
+                            - np.percentile(gap_window, 10)
+                            <= 8.0
+                        )
+                        if stable_contact:
+                            fingertip_touch_points.append(
+                                point_center.astype(np.float32)
+                            )
+                            fingertip_touch_gaps.append(
+                                float(np.median(current_fingertip_gaps))
+                            )
+                            current_fingertip_points.clear()
+                            current_fingertip_gaps.clear()
+                            depth_touch_target_index += 1
+                            if depth_touch_target_index >= len(depth_touch_targets):
+                                touched_camera_points = np.stack(fingertip_touch_points)
+                                spatial_touch_calibration = SpatialTouchCalibration.fit(
+                                    touched_camera_points,
+                                    np.asarray(fingertip_touch_gaps),
+                                    frame_size,
+                                )
+                                matrix = build_homography(
+                                    touched_camera_points,
+                                    depth_touch_targets,
+                                )
+                                camera_points = transform_points(
+                                    np.linalg.inv(matrix),
+                                    output_points,
+                                )
+                                validate_camera_quad(camera_points, frame_size)
+                                detection_roi = camera_detection_roi(
+                                    camera_points, frame_size
+                                )
+                                collecting_depth_touch = False
+                                depth_gate.minimum_gap_mm = max(
+                                    args.touch_min_gap_mm,
+                                    -args.touch_plane_tolerance_mm,
+                                )
+                                depth_gate.maximum_gap_mm = min(
+                                    args.touch_max_gap_mm,
+                                    args.touch_plane_tolerance_mm,
+                                )
+                                depth_gate.reset()
+                                save_calibration(
+                                    args.calibration,
+                                    identity,
+                                    frame_size,
+                                    output_size,
+                                    camera_points,
+                                    output_points,
+                                    None,
+                                    wall_depth_model,
+                                    sensor_mode,
+                                    wall_depth_reference,
+                                    wall_depth_noise,
+                                    None,
+                                    spatial_touch_calibration,
+                                )
+                                print(
+                                    "Four-point touch plane learned: "
+                                    f"active contact band +/-"
+                                    f"{args.touch_plane_tolerance_mm:.1f} "
+                                    "mm."
+                                )
+                            else:
+                                print(
+                                    f"Corner touch {depth_touch_target_index}/"
+                                    f"{len(depth_touch_targets)} captured. "
+                                    "Move to the next target."
+                                )
+                if (
+                    raw_gap_mm is not None
+                    and spatial_touch_calibration is not None
+                ):
+                    raw_gap_mm = spatial_touch_calibration.corrected_gap_mm(
+                        raw_gap_mm,
+                        landmarks[8],
+                        frame_size,
+                    )
+                if raw_gap_mm is None:
+                    smoothed_gap_mm = None
+                    gap_mm = None
+                else:
+                    if smoothed_gap_mm is None:
+                        smoothed_gap_mm = raw_gap_mm
+                    else:
+                        smoothed_gap_mm = 0.25 * smoothed_gap_mm + 0.75 * raw_gap_mm
+                    gap_mm = smoothed_gap_mm
+                depth_camera_point = landmarks[8].copy()
+                inside = point_in_output(mapped_tip, *output_size, margin=4)
+            elif depth_observation is not None and matrix is not None:
                 raw_tip = transform_points(
                     matrix, depth_observation.camera_point.reshape(1, 2)
                 )[0]
@@ -1144,17 +1634,28 @@ def main() -> None:
                         scale=None, point=None, timestamp=now, inside=False, index_extended=False
                     )
             elif depth_enabled:
+                if args.legacy_depth_blob:
+                    depth_calibrated = (
+                        depth_lock is not None
+                        and not collecting_wall_depth
+                        and not collecting_depth_touch
+                    )
+                    depth_index_extended = True
+                else:
+                    depth_calibrated = (
+                        wall_depth_reference is not None
+                        and spatial_touch_calibration is not None
+                        and not collecting_wall_depth
+                        and not collecting_depth_touch
+                    )
+                    depth_index_extended = extended or not args.require_index_extension
                 decision = depth_gate.update(
                     gap_mm=gap_mm,
                     point=mapped_tip,
                     timestamp=now,
                     inside=inside,
-                    index_extended=True,
-                    calibrated=(
-                        depth_lock is not None
-                        and not collecting_wall_depth
-                        and not collecting_depth_touch
-                    ),
+                    index_extended=depth_index_extended,
+                    calibrated=depth_calibrated,
                 )
             else:
                 decision = gate.update(
@@ -1260,7 +1761,11 @@ def main() -> None:
                     draw_touch_target(
                         projector_frame,
                         target,
-                        len(current_target_samples),
+                        (
+                            len(current_target_samples)
+                            if args.legacy_depth_blob
+                            else len(current_fingertip_points)
+                        ),
                         args.depth_touch_samples,
                     )
                 elif not depth_enabled and (touch_reference is None or collecting_touch):
@@ -1314,16 +1819,35 @@ def main() -> None:
                 detail = depth_calibration_message or "Keep people and objects out of the projected area"
             elif collecting_depth_touch:
                 status = (
-                    f"GUIDED TOUCH: {depth_touch_target_index + 1}/"
+                    f"{'GUIDED TOUCH' if args.legacy_depth_blob else 'CORNER TOUCH'}: "
+                    f"{depth_touch_target_index + 1}/"
                     f"{len(depth_touch_targets)}"
                 )
-                if current_target_samples:
+                touch_progress = (
+                    len(current_target_samples)
+                    if args.legacy_depth_blob
+                    else len(current_fingertip_points)
+                )
+                if touch_progress:
                     detail = (
-                        f"Hold contact: {len(current_target_samples)}/"
+                        f"Hold contact: {touch_progress}/"
                         f"{args.depth_touch_samples} samples"
                     )
+                elif not args.legacy_depth_blob and landmarks is None:
+                    detail = "No hand detected: place your full hand inside the tracking box"
+                elif not args.legacy_depth_blob and not extended:
+                    detail = "Point with one straight index finger"
+                elif not args.legacy_depth_blob and gap_mm is None:
+                    detail = (
+                        "No depth at fingertip: re-aim the camera so this target "
+                        "has valid depth"
+                    )
                 else:
-                    detail = "Center an open hand on the target and press it against the wall"
+                    detail = (
+                        "Center an open hand on the target and press it against the wall"
+                        if args.legacy_depth_blob
+                        else "Touch and hold the corner target with your index fingertip"
+                    )
             elif collecting_touch:
                 status = f"TOUCH CALIBRATION: {len(touch_samples)}/{args.touch_samples}"
                 target = np.array([args.projector_width / 2, args.projector_height / 2], dtype=np.float32)
@@ -1341,6 +1865,9 @@ def main() -> None:
             elif depth_enabled and depth_tracker is None:
                 status = "WALL DEPTH CALIBRATION NEEDED"
                 detail = "Press t and keep the projected wall clear"
+            elif depth_enabled and not args.legacy_depth_blob and landmarks is None:
+                status = "READY"
+                detail = "No hand detected: point your index finger at the projected wall"
             else:
                 status = decision.reason.upper()
                 if depth_enabled:
@@ -1387,11 +1914,16 @@ def main() -> None:
                     wall_depth_reference = None
                     wall_depth_noise = None
                     depth_touch_profile = None
+                    spatial_touch_calibration = None
                     depth_tracker = None
                     depth_lock = None
                     collecting_depth_touch = False
                     guided_touch_samples.clear()
                     current_target_samples.clear()
+                    fingertip_touch_points.clear()
+                    fingertip_touch_gaps.clear()
+                    current_fingertip_points.clear()
+                    current_fingertip_gaps.clear()
                     depth_touch_target_index = 0
                     smoothed_gap_mm = None
                     depth_gate.reset()
@@ -1426,6 +1958,7 @@ def main() -> None:
                 wall_depth_reference = None
                 wall_depth_noise = None
                 depth_touch_profile = None
+                spatial_touch_calibration = None
                 depth_tracker = None
                 depth_lock = None
                 touch_samples.clear()
@@ -1433,6 +1966,10 @@ def main() -> None:
                 wall_depth_frames.clear()
                 guided_touch_samples.clear()
                 current_target_samples.clear()
+                fingertip_touch_points.clear()
+                fingertip_touch_gaps.clear()
+                current_fingertip_points.clear()
+                current_fingertip_gaps.clear()
                 depth_touch_target_index = 0
                 collecting_touch = False
                 collecting_wall_depth = False
@@ -1460,6 +1997,8 @@ def main() -> None:
     finally:
         if landmarker is not None:
             landmarker.close()
+        if landmarker_alt is not None:
+            landmarker_alt.close()
         if depth_camera is not None:
             depth_camera.release()
         if cap is not None:

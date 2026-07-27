@@ -19,3 +19,6 @@ wall_touch_calibration.depth.npz
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Runtime SDK logs
+Log/

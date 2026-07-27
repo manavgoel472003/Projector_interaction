@@ -1,13 +1,15 @@
 import unittest
+from argparse import Namespace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 
-from wall_touch_core import DepthTouchProfile, WallDepthModel
+from wall_touch_core import DepthTouchProfile, SpatialTouchCalibration, WallDepthModel
 from wall_touch_paint import (
     DEPTH_TOUCH_MODE,
+    apply_close_bottom_preset,
     camera_stream_profile,
     depth_reference_path,
     validate_camera,
@@ -16,6 +18,41 @@ from wall_touch_paint import load_calibration, save_calibration
 
 
 class CameraSelectionTests(unittest.TestCase):
+    def test_close_bottom_preset_prioritizes_steep_angle_depth_coverage(self):
+        args = Namespace(
+            close_bottom=True,
+            sensor="auto",
+            realsense_preset="high-accuracy",
+            camera_width=None,
+            camera_height=None,
+            camera_fps=None,
+            depth_calibration_frames=45,
+            depth_touch_samples=10,
+            touch_plane_tolerance_mm=5.0,
+            touch_dwell_ms=25,
+            fingertip_depth_radius=7,
+            detection_size=384,
+            require_index_extension=False,
+            enhance_contrast=False,
+            dual_detect=False,
+        )
+        apply_close_bottom_preset(args)
+        self.assertEqual(args.sensor, "realsense")
+        self.assertEqual(args.realsense_preset, "high-density")
+        self.assertEqual(
+            (args.camera_width, args.camera_height, args.camera_fps),
+            (640, 480, 30),
+        )
+        self.assertEqual(args.depth_calibration_frames, 60)
+        self.assertEqual(args.depth_touch_samples, 14)
+        self.assertEqual(args.touch_plane_tolerance_mm, 12.0)
+        self.assertEqual(args.touch_dwell_ms, 0)
+        self.assertEqual(args.fingertip_depth_radius, 12)
+        self.assertEqual(args.detection_size, 448)
+        self.assertFalse(args.require_index_extension)
+        self.assertTrue(args.enhance_contrast)
+        self.assertTrue(args.dual_detect)
+
     @patch(
         "wall_touch_paint.discover_external_cameras",
         return_value=[("/dev/v4l/by-id/example-video-index0", "External UVC Camera")],
@@ -56,6 +93,7 @@ class CameraSelectionTests(unittest.TestCase):
         reference = np.full((200, 320), 1234.0, np.float32)
         noise = np.full((200, 320), 8.0, np.float32)
         profile = DepthTouchProfile(12.0, 42.0, 300, 2500, 50)
+        spatial = SpatialTouchCalibration(np.array([8.0, -5.0, 21.0]), 7.0, 40)
         with TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.json"
             save_calibration(
@@ -71,6 +109,7 @@ class CameraSelectionTests(unittest.TestCase):
                 reference,
                 noise,
                 profile,
+                spatial,
             )
             loaded = load_calibration(
                 path,
@@ -93,6 +132,10 @@ class CameraSelectionTests(unittest.TestCase):
         np.testing.assert_allclose(loaded["wall_depth_reference"], reference)
         np.testing.assert_allclose(loaded["wall_depth_noise"], noise)
         self.assertEqual(loaded["depth_touch_profile"], profile)
+        loaded_spatial = loaded["spatial_touch_calibration"]
+        np.testing.assert_allclose(loaded_spatial.coefficients, spatial.coefficients)
+        self.assertEqual(loaded_spatial.tolerance_mm, spatial.tolerance_mm)
+        self.assertEqual(loaded_spatial.sample_count, spatial.sample_count)
         self.assertEqual(loaded["depth_touch_mode"], DEPTH_TOUCH_MODE)
         self.assertIsNone(rejected)
 

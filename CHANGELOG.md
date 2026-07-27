@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+- Add `--close-bottom` for a RealSense mounted close below the projection and
+  aimed upward. It selects `640x480/30` High Density depth, longer wall/corner
+  calibration, full-detail hand detection, a larger fingertip depth patch, and
+  a `+/-12 mm` zero-dwell contact band without runtime pose gating.
+- Tighten calibrated fingertip contact to `+/-5 mm` around the spatial plane and
+  reduce activation dwell from 50 ms to 25 ms for closer, more responsive touch.
+- Restore guided physical calibration as four corner touches. The samples
+  refine camera-to-projector homography and fit a spatial fingertip contact-gap
+  plane, compensating for camera angle instead of relying on one global depth
+  threshold.
+- Add native RealSense RGB-D capture with depth-to-color alignment, metric depth
+  scaling, the high-accuracy stereo preset, emitter/laser configuration, and
+  disparity-domain spatial and temporal filtering. Automatic sensor selection
+  now prefers RealSense before Orbbec.
+- Detect touches in Orbbec depth mode with MediaPipe hand tracking fused with
+  the learned wall-depth plane: the index fingertip is located in the aligned
+  color image, and its wall gap is measured from depth at that exact pixel.
+  This replaces the "largest near-wall blob" heuristic with a pose-verified,
+  pinpoint fingertip, so wall noise, forearms, and projector artifacts no longer
+  register as touches.
+- Remove the fragile guided-touch calibration from the default depth flow. It
+  could auto-complete from depth noise or projector light on the target (no hand
+  required) and produce a bad touch profile. Depth calibration is now just the
+  touch-free wall-plane fit; touch is gated by the fingertip's distance to that
+  plane (`--touch-max-gap-mm`).
+- Add `--legacy-depth-blob` to restore the previous blob tracker plus
+  guided-touch calibration for A/B comparison on a given wall.
+
 ## 3.5.1
 
 - Add clean 16:10 projector-output previews for all nine modes to the GitHub

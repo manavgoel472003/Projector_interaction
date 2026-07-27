@@ -1,13 +1,13 @@
-# Orbbec RGB-D Wall Touch Demo
+# RGB-D Wall Touch Demo
 
-The preferred sensor is an Orbbec Gemini 336/335-series RGB-D camera. The app
-uses synchronized hardware depth-to-color alignment and retains standard
-external V4L2 cameras as a fallback.
+The preferred sensor is an Intel RealSense D435i/D455 or an Orbbec Gemini
+336/335-series RGB-D camera. The app uses synchronized depth aligned to color
+coordinates and retains standard external V4L2 cameras as a fallback.
 
 ## Camera placement
 
 1. Put the projector in its final position facing the wall.
-2. Put the Orbbec near the projector, preferably within 20-50 cm of
+2. Put the RGB-D camera near the projector, preferably within 20-50 cm of
    the projector lens.
 3. Aim the camera at the center of the projected rectangle.
 4. Make sure the camera sees the entire rectangle with some wall around every
@@ -17,6 +17,29 @@ external V4L2 cameras as a fallback.
 
 A mostly front-facing view gives the cleanest coordinate mapping. A slight
 horizontal offset is fine; the four-point homography corrects that perspective.
+
+### Close bottom placement
+
+When far-field touches are unreliable, mount the RealSense approximately
+`30-45 cm` from the wall, centered below the projection, and pitch it upward at
+the projection center. The full projected rectangle must remain visible with a
+small wall border.
+
+```bash
+./run_wall_touch_demo.sh --close-bottom --fresh
+```
+
+This uses `640x480/30 FPS` High Density depth, which produced the best valid
+depth coverage in the close test position. It also collects 60 empty-wall
+frames and 14 stable samples at each physical corner touch before enabling the
+`+/-12 mm` contact band. A 12-pixel fingertip depth neighborhood improves
+coverage at the steep angle, and runtime touch does not depend on the hand-pose
+extension classifier.
+
+During corner calibration, `No depth at fingertip` means that part of the wall
+is outside reliable stereo coverage. Re-aim or center the camera and restart
+with `--fresh`; software thresholds cannot recover a corner with no measured
+depth.
 
 ## Run
 
@@ -30,6 +53,18 @@ Run:
 ```bash
 ./run_wall_touch_demo.sh --fresh
 ```
+
+For RealSense, install the project normally and verify detection:
+
+```bash
+lsusb | grep -i realsense
+./run_wall_touch_demo.sh --sensor realsense --fresh
+```
+
+The RealSense backend uses native metric depth, aligns it into color-pixel
+coordinates, selects the high-accuracy preset and emitter when available, and
+filters in disparity space. Keep the camera on a direct USB 3 port for the
+default `1280x720/30 FPS` synchronized stream.
 
 Before the first Orbbec run:
 
@@ -78,15 +113,14 @@ For a different projector layout, provide its resolution and desktop origin:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep people and objects out of the projected area while the green depth
    calibration ring fills for 45 frames.
-4. Center an open hand on the center target and press it against the wall, then
-   repeat at the upper-left, upper-right, lower-right, and lower-left targets.
-   Each target advances automatically after collecting a stable hand-contact
-   patch.
-5. Touch and drag within the projected area.
-6. Press `t` only when intentionally relearning the wall and touch profile.
+4. Touch and hold each of the four corner targets with a straight index finger.
+   These touches refine projection geometry and learn spatial depth offset from
+   camera angle.
+5. Touch or drag within the projected area.
+6. Press `t` only when intentionally relearning wall depth and corner touches.
 
 Calibration accepts a projected quadrilateral covering at least 1.25% of the
-camera frame. Orbbec mode processes only that quadrilateral; RGB fallback uses
+camera frame. RGB-D mode processes only that quadrilateral; RGB fallback uses
 an expanded crop around it for hand tracking.
 
 ## Controls
@@ -95,7 +129,7 @@ an expanded crop around it for hand tracking.
 - `[`: select the previous reactive mode
 - `1`-`9`: select any mode directly; games occupy `7`-`9`
 - `c`: clear all artwork while keeping the current calibration
-- `t`: relearn wall depth in Orbbec mode or hand size in RGB fallback
+- `t`: relearn wall depth in RGB-D mode or hand size in RGB fallback
 - `r`: clear artwork and discard calibration so you can choose new projection points
 - `f`: toggle projector fullscreen
 - `q` or `Esc`: quit
@@ -143,26 +177,24 @@ layout have not moved.
 
 ## What counts as touch
 
-In Orbbec mode, 45 empty-wall frames produce a per-pixel median depth and noise
-map. A three-frame temporal median is compared with that reference. Within each
-connected hand/arm foreground region, the tracker finds the largest patch no
-more than `60 mm` from the wall and uses that patch's centroid as the
-interaction coordinate. This lets an open palm provide many more depth pixels
-than one fingertip at longer camera distances.
-
-Five guided hand presses learn the accepted contact gap and contact-patch area.
-Approach samples farther than `60 mm` are excluded. A matching patch must remain
-spatially consistent for three frames before it becomes a cursor. MediaPipe is
-not used in this mode. The depth foreground defaults are:
+In RGB-D mode, 45 empty-wall frames produce a per-pixel median depth and noise
+map. MediaPipe locates the index fingertip in the color frame, and aligned depth
+measures the fingertip's gap from that learned wall reference. Four physical
+corner touches then fit a spatial contact-offset plane and refine the
+camera-to-projector homography. The gate uses the angle-corrected gap to reject
+hovering, invalid depth, and measurements behind the wall. The contact band
+defaults to `+/-5 mm`, with a `25 ms` activation dwell:
 
 ```bash
 ./run_wall_touch_demo.sh \
-  --touch-max-gap-mm 30 --depth-noise-multiplier 0.75
+  --touch-plane-tolerance-mm 5 --touch-dwell-ms 25
 ```
 
-Lower `--depth-calibration-max-gap-mm` to reject hovering more strictly. Raise
-it only if real palm presses are missed, because a larger value also admits
-hovering. The tracker is geometric rather than semantic, so another object
+Lower `--touch-plane-tolerance-mm` to require contact closer to the calibrated
+plane. Raise it only if real fingertip presses are missed, because a larger
+value also admits hovering.
+`--legacy-depth-blob` restores the geometric contact-patch tracker and five
+guided presses for comparison; in that mode, another object
 pressed against the wall can also activate it. Moving the depth camera closer
 to the wall is preferable when possible. The debug window reports the live
 wall gap.

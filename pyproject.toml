@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "wall-touch-demo"
 version = "3.5.1"
-description = "Projector wall interaction using calibrated Orbbec RGB-D or external RGB cameras"
+description = "Projector wall interaction using calibrated RealSense/Orbbec RGB-D or external RGB cameras"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
   "numpy==2.2.6",
   "opencv-contrib-python==5.0.0.93",
   "pyorbbecsdk2==2.1.1",
+  "pyrealsense2==2.58.3.10794",
 ]
 
 [project.scripts]
@@ -28,4 +29,5 @@ py-modules = [
   "wall_touch_orbit_keeper",
   "wall_touch_paint",
   "wall_touch_orbbec",
+  "wall_touch_realsense",
 ]

@@ -1,13 +1,14 @@
 # Projector Interaction
 
-Turn a projector and an Orbbec RGB-D camera into an interactive wall. The
-camera maps depth foreground into projector coordinates with a four-point
-homography, while aligned depth measures its distance from a calibrated empty
-wall in millimeters. Orbbec mode does not depend on RGB hand landmarks. A
-standard external RGB camera remains available as a fallback.
+Turn a projector and a RealSense or Orbbec RGB-D camera into an interactive
+wall. The camera maps depth foreground into projector coordinates with a
+four-point homography, while aligned depth measures its distance from a
+calibrated empty wall in millimeters. RGB-D mode fuses MediaPipe's
+index-fingertip location with depth at that aligned pixel. A standard external
+RGB camera remains available as a fallback.
 
-The application prefers a connected Orbbec automatically. It never selects the
-known PC webcam as its RGB fallback.
+The application prefers a connected RealSense, then an Orbbec, automatically.
+It never selects the known PC webcam as its RGB fallback.
 
 ## Modes
 
@@ -45,18 +46,18 @@ debug overlays are not included.
 </table>
 
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
-sensor noise. Five guided open-hand presses then learn the real contact gap and
-palm-contact patch size for the current camera distance. The depth tracker uses
-the centroid of the largest near-wall contact patch, so it does not depend on a
-small fingertip silhouette. A cursor appears only after three spatially
-consistent matching frames.
+sensor noise. The hand tracker identifies the fingertip in color, then accepts
+contact only when aligned metric depth places it within the calibrated wall-gap
+range. Four guided corner touches refine the camera/projector mapping and fit a
+spatial contact-offset plane, which compensates for an angled camera. The
+legacy near-wall blob tracker remains available with `--legacy-depth-blob`.
 
 ## Requirements
 
 - Linux with Video4Linux2; USB 3 recommended
 - Python 3.10 or newer
 - Projector configured as a display
-- Orbbec Gemini RGB-D camera, preferably Gemini 336/335 series
+- Intel RealSense D435i/D455 or Orbbec Gemini RGB-D camera
 - Optional external RGB camera fallback
 
 ## Quick Start
@@ -65,8 +66,8 @@ consistent matching frames.
 git clone https://github.com/manavgoel472003/Projector_interaction.git
 cd Projector_interaction
 ./install.sh
+# Orbbec only: install its udev rule, then unplug and reconnect it.
 ./scripts/install_orbbec_udev.sh
-# Unplug and reconnect the Orbbec after installing its USB rule.
 ./run_wall_touch_demo.sh --fresh
 ```
 
@@ -75,8 +76,21 @@ the MediaPipe model used by RGB fallback, verifies its SHA-256 checksum, and
 runs the tests. The udev command installs Orbbec's official Linux USB
 permissions and requires your sudo password once.
 
-With the Gemini connected, `--sensor auto` selects synchronized, hardware
-aligned color and depth. Force it when diagnosing setup:
+With a RealSense connected, `--sensor auto` selects synchronized depth aligned
+to the color image, enables the high-accuracy stereo preset and IR emitter when
+the model supports them, and applies spatial/temporal filtering. Force it when
+diagnosing setup:
+
+```bash
+./run_wall_touch_demo.sh --sensor realsense --fresh
+```
+
+The camera must appear in `lsusb` as an Intel RealSense device. Use a direct
+USB 3 connection; hubs and USB 2 links can reduce or prevent the requested
+aligned `1280x720/30 FPS` stream.
+
+With a Gemini connected, the same automatic mode selects synchronized,
+hardware-aligned color and depth. Force it with:
 
 ```bash
 ./run_wall_touch_demo.sh --sensor orbbec --fresh
@@ -122,17 +136,40 @@ Format and stream settings can be overridden when testing other hardware:
    top-left, top-right, bottom-right, bottom-left.
 3. Keep the projected area empty while 45 wall-depth frames are collected
    (about three seconds on the USB 2.1 profile).
-4. Center an open hand over each of the five targets and press it against the
-   wall: center, upper-left, upper-right, lower-right, and lower-left. Each
-   advances automatically.
-5. Touch and drag inside the projected region.
+4. Touch and hold the four corner targets in order with a straight index
+   finger. Each advances automatically after stable depth samples are captured.
+5. Touch or drag inside the projected region.
+
+After four-point calibration, contact defaults to within `5 mm` of the learned
+spatial contact plane and activates after `25 ms`. Adjust
+`--touch-plane-tolerance-mm` if needed; lower values require the finger to be
+closer to calibrated contact.
+
+### Close bottom placement
+
+For a RealSense mounted below the projection, close to the wall and aimed
+upward, use:
+
+```bash
+./run_wall_touch_demo.sh --close-bottom --fresh
+```
+
+Mount the camera about `30-45 cm` from the wall, centered under the projected
+area, and aim it toward the projection center. Keep the complete projection
+inside the camera image with a small border. This preset selects
+`640x480/30 FPS` High Density depth for the taller field of view and best
+measured close-range coverage, then uses 60 empty-wall frames, 14 stable samples
+per corner touch, full-detail hand detection, a larger 12-pixel aligned-depth
+patch, a `+/-12 mm` corrected contact band, and immediate activation. Runtime
+touches do not require MediaPipe's index-extension pose classification after
+the four calibration touches are complete.
 
 Geometry is stored in `wall_touch_calibration.json`; the depth reference and
 noise map are stored in `wall_touch_calibration.depth.npz`. Both are local and
 ignored by Git. Use `--fresh` or press `r` after moving the camera, projector,
 or wall.
 
-To keep the four projection points but relearn depth and guided touches:
+To keep the four projection points but relearn the empty-wall depth:
 
 ```bash
 ./run_wall_touch_demo.sh --recalibrate-depth
@@ -166,6 +203,7 @@ Repository layout:
 
 ```text
 wall_touch_paint.py    camera, calibration, interaction loop
+wall_touch_realsense.py  filtered, color-aligned RealSense RGB-D capture
 wall_touch_orbbec.py  synchronized Orbbec RGB-D capture
 wall_touch_core.py     geometry, depth-background tracking, and touch gates
 wall_touch_effects.py  original visual simulations

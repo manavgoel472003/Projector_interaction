@@ -8,6 +8,7 @@ from wall_touch_core import (
     DepthContactTracker,
     DepthTouchProfile,
     DepthTouchGate,
+    SpatialTouchCalibration,
     TouchGate,
     WallDepthModel,
     build_homography,
@@ -36,6 +37,37 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(point_in_output(np.array([100, 100]), 1920, 1200))
         self.assertFalse(point_in_output(np.array([-1, 100]), 1920, 1200))
         self.assertFalse(point_in_output(np.array([1920, 100]), 1920, 1200))
+
+    def test_spatial_touch_calibration_corrects_angled_contact_plane(self):
+        frame_size = (1280, 720)
+        points = np.array(
+            [[180, 120], [1100, 140], [1080, 620], [200, 600]],
+            dtype=np.float32,
+        )
+        expected_coefficients = np.array([24.0, -18.0, 22.0])
+        width, height = frame_size
+        features = np.column_stack(
+            (
+                (points[:, 0] - (width - 1) * 0.5) / width,
+                (points[:, 1] - (height - 1) * 0.5) / height,
+                np.ones(len(points)),
+            )
+        )
+        gaps = features @ expected_coefficients
+        calibration = SpatialTouchCalibration.fit(points, gaps, frame_size)
+
+        np.testing.assert_allclose(
+            calibration.coefficients,
+            expected_coefficients,
+            atol=1e-5,
+        )
+        self.assertAlmostEqual(
+            calibration.corrected_gap_mm(gaps[2], points[2], frame_size),
+            0.0,
+            places=5,
+        )
+        restored = SpatialTouchCalibration.from_dict(calibration.to_dict())
+        np.testing.assert_allclose(restored.coefficients, calibration.coefficients)
 
     def test_small_or_crossed_calibration_is_rejected(self):
         small = np.array([[20, 600], [80, 600], [80, 650], [20, 650]], dtype=np.float32)
