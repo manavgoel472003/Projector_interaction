@@ -22,7 +22,6 @@ two distinct sensors.
 from __future__ import annotations
 
 import argparse
-from collections import deque
 from pathlib import Path
 
 import cv2
@@ -72,6 +71,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--projector-y", type=int, default=0)
     parser.add_argument("--debug-x", type=int, default=1980)
     parser.add_argument("--debug-y", type=int, default=60)
+    parser.add_argument("--debug-width", type=int, default=960,
+                        help="Width of each camera preview window.")
+    parser.add_argument("--debug-height", type=int, default=600,
+                        help="Height of each camera preview window.")
     parser.add_argument("--windowed", action="store_true")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
     parser.add_argument("--detection-confidence", type=float, default=0.40)
@@ -173,8 +176,8 @@ def main() -> None:
     projector_window = "Wall Touch Dual - PROJECTOR"
     for name, offset in ((tracker_window, 0), (touch_window, 1)):
         cv2.namedWindow(name, cv2.WINDOW_NORMAL)
-        cv2.moveWindow(name, args.debug_x, args.debug_y + offset * 380)
-        cv2.resizeWindow(name, 560, 360)
+        cv2.moveWindow(name, args.debug_x, args.debug_y + offset * (args.debug_height + 40))
+        cv2.resizeWindow(name, args.debug_width, args.debug_height)
     cv2.namedWindow(projector_window, cv2.WINDOW_NORMAL)
     cv2.moveWindow(projector_window, args.projector_x, args.projector_y)
     cv2.resizeWindow(projector_window, args.projector_width, args.projector_height)
@@ -341,11 +344,19 @@ def main() -> None:
                 cv2.circle(projector_frame, tuple(np.rint(fingertip).astype(int)),
                            args.brush_radius + 8, color, 5, cv2.LINE_AA)
 
-            for target, done_pts in ((tracker_debug, tracker_camera_points),
-                                     (touch_debug, touch_camera_points)):
+            for target, clicks, done_pts in (
+                (tracker_debug, tracker_clicks, tracker_camera_points),
+                (touch_debug, touch_clicks, touch_camera_points),
+            ):
                 if done_pts is not None:
                     cv2.polylines(target, [np.rint(done_pts).astype(np.int32)], True,
-                                  (80, 235, 100), 2)
+                                  (80, 235, 100), 3)
+                for index, click in enumerate(clicks):
+                    center = tuple(np.rint(np.asarray(click)).astype(int))
+                    cv2.circle(target, center, 13, (0, 220, 255), 3, cv2.LINE_AA)
+                    cv2.circle(target, center, 4, (0, 220, 255), -1, cv2.LINE_AA)
+                    cv2.putText(target, str(index + 1), (center[0] + 15, center[1] - 11),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 220, 255), 2, cv2.LINE_AA)
             for contact in contacts:
                 if touch_camera_points is not None and touch_matrix is not None:
                     cam_pt = transform_points(np.linalg.inv(touch_matrix),
