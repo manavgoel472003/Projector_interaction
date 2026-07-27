@@ -5,6 +5,8 @@ import time
 
 import numpy as np
 
+from wall_touch_core import CameraIntrinsics
+
 try:
     import pyrealsense2 as rs
 except ImportError as error:  # pragma: no cover - exercised without the optional SDK
@@ -64,6 +66,16 @@ class RealSenseCamera:
         self.usb_type = self._device_info(device, rs.camera_info.usb_type_descriptor) or "USB"
         self.depth_sensor = device.first_depth_sensor()
         self.depth_scale_m = float(self.depth_sensor.get_depth_scale())
+        color_profile = self.profile.get_stream(rs.stream.color).as_video_stream_profile()
+        color_intrinsics = color_profile.get_intrinsics()
+        self.intrinsics = CameraIntrinsics(
+            fx=float(color_intrinsics.fx),
+            fy=float(color_intrinsics.fy),
+            cx=float(color_intrinsics.ppx),
+            cy=float(color_intrinsics.ppy),
+            width=int(color_intrinsics.width),
+            height=int(color_intrinsics.height),
+        )
         self.accuracy_settings = self._configure_depth_sensor(
             self.depth_sensor, depth_preset
         )

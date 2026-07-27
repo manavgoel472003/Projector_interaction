@@ -6,6 +6,8 @@ import time
 import cv2
 import numpy as np
 
+from wall_touch_core import CameraIntrinsics
+
 try:
     from pyorbbecsdk import (
         Config,
@@ -83,6 +85,15 @@ class OrbbecCamera:
             preferred_width, preferred_height, fps = 640, 480, min(fps, 15)
         self.config, self.color_profile, self.depth_profile = self._hardware_d2c_config(
             preferred_width, preferred_height, fps
+        )
+        color_intrinsics = self.color_profile.get_intrinsic()
+        self.intrinsics = CameraIntrinsics(
+            fx=float(color_intrinsics.fx),
+            fy=float(color_intrinsics.fy),
+            cx=float(color_intrinsics.cx),
+            cy=float(color_intrinsics.cy),
+            width=int(color_intrinsics.width),
+            height=int(color_intrinsics.height),
         )
         try:
             self.pipeline.enable_frame_sync()

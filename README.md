@@ -47,9 +47,10 @@ debug overlays are not included.
 
 `spill` is the default. Empty-wall calibration learns depth and per-pixel
 sensor noise. The hand tracker identifies the fingertip in color, then accepts
-contact only when aligned metric depth places it within the calibrated wall-gap
-range. Four guided corner touches refine the camera/projector mapping and fit a
-spatial contact-offset plane, which compensates for an angled camera. The
+contact only when aligned metric depth places it at the calibrated 3D plane.
+Four guided corner touches refine the camera/projector mapping and fit that
+physical plane from deprojected `(x, y, z)` samples using the camera intrinsics.
+The
 legacy near-wall blob tracker remains available with `--legacy-depth-blob`.
 
 ## Requirements
@@ -140,10 +141,10 @@ Format and stream settings can be overridden when testing other hardware:
    finger. Each advances automatically after stable depth samples are captured.
 5. Touch or drag inside the projected region.
 
-After four-point calibration, contact defaults to within `5 mm` of the learned
-spatial contact plane and activates after `25 ms`. Adjust
+After four-point calibration, contact activates immediately when the fingertip
+enters the plane's default `18 mm` approach band. Adjust
 `--touch-plane-tolerance-mm` if needed; lower values require the finger to be
-closer to calibrated contact.
+closer to the calibrated plane.
 
 ### Close bottom placement
 

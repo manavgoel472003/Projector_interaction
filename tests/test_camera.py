@@ -93,7 +93,12 @@ class CameraSelectionTests(unittest.TestCase):
         reference = np.full((200, 320), 1234.0, np.float32)
         noise = np.full((200, 320), 8.0, np.float32)
         profile = DepthTouchProfile(12.0, 42.0, 300, 2500, 50)
-        spatial = SpatialTouchCalibration(np.array([8.0, -5.0, 21.0]), 7.0, 40)
+        spatial = SpatialTouchCalibration(
+            np.array([0.02, -0.01, -0.99974994]),
+            1100.0,
+            18.0,
+            40,
+        )
         with TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.json"
             save_calibration(
@@ -133,7 +138,8 @@ class CameraSelectionTests(unittest.TestCase):
         np.testing.assert_allclose(loaded["wall_depth_noise"], noise)
         self.assertEqual(loaded["depth_touch_profile"], profile)
         loaded_spatial = loaded["spatial_touch_calibration"]
-        np.testing.assert_allclose(loaded_spatial.coefficients, spatial.coefficients)
+        np.testing.assert_allclose(loaded_spatial.normal, spatial.normal)
+        self.assertEqual(loaded_spatial.offset_mm, spatial.offset_mm)
         self.assertEqual(loaded_spatial.tolerance_mm, spatial.tolerance_mm)
         self.assertEqual(loaded_spatial.sample_count, spatial.sample_count)
         self.assertEqual(loaded["depth_touch_mode"], DEPTH_TOUCH_MODE)

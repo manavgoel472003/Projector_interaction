@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fit the single-camera touch surface as a true 3D camera-space plane from
+  MediaPipe X/Y, aligned depth Z, and the RGB camera intrinsics. Use immediate
+  plane-entry activation, a practical 18 mm approach band, center-first
+  fingertip depth sampling, and lower-lag projected cursor smoothing.
 - Add a two-camera mode (`wall_touch_dual.py`, `./run_wall_touch_demo.sh --dual`):
   a frontal **tracker** camera runs MediaPipe for the fingertip while a low /
   grazing **touch** camera senses contact from depth, fused on the shared

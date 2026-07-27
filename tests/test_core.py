@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from wall_touch_core import (
+    CameraIntrinsics,
     DepthContactLock,
     DepthContactObservation,
     DepthContactTracker,
@@ -39,35 +40,34 @@ class GeometryTests(unittest.TestCase):
         self.assertFalse(point_in_output(np.array([1920, 100]), 1920, 1200))
 
     def test_spatial_touch_calibration_corrects_angled_contact_plane(self):
-        frame_size = (1280, 720)
+        intrinsics = CameraIntrinsics(900.0, 910.0, 640.0, 360.0, 1280, 720)
         points = np.array(
             [[180, 120], [1100, 140], [1080, 620], [200, 600]],
             dtype=np.float32,
         )
-        expected_coefficients = np.array([24.0, -18.0, 22.0])
-        width, height = frame_size
-        features = np.column_stack(
+        expected_normal = np.array([0.08, -0.04, -1.0], dtype=np.float64)
+        expected_normal /= np.linalg.norm(expected_normal)
+        expected_offset = 1050.0
+        rays = np.column_stack(
             (
-                (points[:, 0] - (width - 1) * 0.5) / width,
-                (points[:, 1] - (height - 1) * 0.5) / height,
+                (points[:, 0] - intrinsics.cx) / intrinsics.fx,
+                (points[:, 1] - intrinsics.cy) / intrinsics.fy,
                 np.ones(len(points)),
             )
         )
-        gaps = features @ expected_coefficients
-        calibration = SpatialTouchCalibration.fit(points, gaps, frame_size)
+        depths = -expected_offset / (rays @ expected_normal)
+        calibration = SpatialTouchCalibration.fit(points, depths, intrinsics)
 
-        np.testing.assert_allclose(
-            calibration.coefficients,
-            expected_coefficients,
-            atol=1e-5,
-        )
+        np.testing.assert_allclose(calibration.normal, expected_normal, atol=5e-4)
+        self.assertAlmostEqual(calibration.offset_mm, expected_offset, delta=0.5)
         self.assertAlmostEqual(
-            calibration.corrected_gap_mm(gaps[2], points[2], frame_size),
+            calibration.signed_distance_mm(points[2], depths[2], intrinsics),
             0.0,
             places=5,
         )
         restored = SpatialTouchCalibration.from_dict(calibration.to_dict())
-        np.testing.assert_allclose(restored.coefficients, calibration.coefficients)
+        np.testing.assert_allclose(restored.normal, calibration.normal)
+        self.assertEqual(restored.offset_mm, calibration.offset_mm)
 
     def test_small_or_crossed_calibration_is_rejected(self):
         small = np.array([[20, 600], [80, 600], [80, 650], [20, 650]], dtype=np.float32)
@@ -389,6 +389,21 @@ class DepthTouchTests(unittest.TestCase):
         self.assertFalse(first.active)
         self.assertTrue(contact.active)
         self.assertEqual(contact.distance_mm, 22)
+
+    def test_depth_gate_can_activate_on_first_plane_crossing(self):
+        gate = DepthTouchGate(
+            minimum_gap_mm=-30,
+            maximum_gap_mm=18,
+            dwell_seconds=0,
+        )
+        contact = gate.update(
+            gap_mm=12,
+            point=np.array([400, 300]),
+            timestamp=1.0,
+            inside=True,
+            index_extended=True,
+        )
+        self.assertTrue(contact.active)
 
 
 if __name__ == "__main__":

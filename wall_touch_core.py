@@ -185,10 +185,42 @@ class DepthContactObservation:
 
 
 @dataclass(frozen=True)
-class SpatialTouchCalibration:
-    """Expected raw fingertip wall gap as a plane over camera image coordinates."""
+class CameraIntrinsics:
+    """Pinhole intrinsics for the color image to which depth is aligned."""
 
-    coefficients: np.ndarray
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    width: int
+    height: int
+
+    def deproject(self, camera_point: np.ndarray, depth_mm: float) -> np.ndarray:
+        point = np.asarray(camera_point, dtype=np.float64)
+        depth = float(depth_mm)
+        if (
+            point.shape != (2,)
+            or not np.isfinite(point).all()
+            or not np.isfinite(depth)
+            or depth <= 0
+        ):
+            raise ValueError("A valid image point and positive depth are required")
+        return np.array(
+            [
+                (point[0] - self.cx) * depth / self.fx,
+                (point[1] - self.cy) * depth / self.fy,
+                depth,
+            ],
+            dtype=np.float64,
+        )
+
+
+@dataclass(frozen=True)
+class SpatialTouchCalibration:
+    """A physical fingertip contact plane in camera-space millimetres."""
+
+    normal: np.ndarray
+    offset_mm: float
     tolerance_mm: float
     sample_count: int
 
@@ -196,74 +228,87 @@ class SpatialTouchCalibration:
     def fit(
         cls,
         camera_points: np.ndarray,
-        gaps_mm: np.ndarray,
-        frame_size: tuple[int, int],
+        depths_mm: np.ndarray,
+        intrinsics: CameraIntrinsics,
     ) -> "SpatialTouchCalibration":
         points = np.asarray(camera_points, dtype=np.float64)
-        gaps = np.asarray(gaps_mm, dtype=np.float64)
+        depths = np.asarray(depths_mm, dtype=np.float64)
         if points.ndim != 2 or points.shape[1] != 2 or len(points) < 4:
             raise ValueError("Four or more fingertip contact points are required")
-        if gaps.shape != (len(points),):
-            raise ValueError("Each fingertip contact point needs one depth gap")
-        valid = np.isfinite(points).all(axis=1) & np.isfinite(gaps)
+        if depths.shape != (len(points),):
+            raise ValueError("Each fingertip contact point needs one depth")
+        valid = (
+            np.isfinite(points).all(axis=1)
+            & np.isfinite(depths)
+            & (depths >= 100.0)
+            & (depths <= 10_000.0)
+        )
         if np.count_nonzero(valid) < 4:
             raise ValueError("Not enough valid fingertip contact samples")
 
-        width, height = frame_size
-        x = (points[valid, 0] - (width - 1) * 0.5) / max(width, 1)
-        y = (points[valid, 1] - (height - 1) * 0.5) / max(height, 1)
-        design = np.column_stack((x, y, np.ones_like(x)))
-        coefficients = np.linalg.lstsq(design, gaps[valid], rcond=None)[0]
-        residual = gaps[valid] - design @ coefficients
-        median = float(np.median(residual))
-        mad = float(np.median(np.abs(residual - median)))
-        tolerance = float(np.clip(3.0 * 1.4826 * mad + 4.0, 6.0, 20.0))
-        return cls(coefficients, tolerance, int(np.count_nonzero(valid)))
-
-    def expected_gap_mm(
-        self,
-        camera_point: np.ndarray,
-        frame_size: tuple[int, int],
-    ) -> float:
-        point = np.asarray(camera_point, dtype=np.float64)
-        width, height = frame_size
-        features = np.array(
+        points_3d = np.stack(
             [
-                (point[0] - (width - 1) * 0.5) / max(width, 1),
-                (point[1] - (height - 1) * 0.5) / max(height, 1),
-                1.0,
+                intrinsics.deproject(point, depth)
+                for point, depth in zip(points[valid], depths[valid])
             ]
         )
-        return float(features @ self.coefficients)
+        # The arithmetic mean of coplanar samples remains on their plane;
+        # a component-wise median can combine coordinates from different samples
+        # and shift the fitted plane by several millimetres.
+        center = np.mean(points_3d, axis=0)
+        _, _, vh = np.linalg.svd(points_3d - center, full_matrices=False)
+        normal = vh[-1]
+        normal /= np.linalg.norm(normal)
+        offset = -float(normal @ center)
 
-    def corrected_gap_mm(
+        # Keep the camera origin on the positive side. Approaching the wall then
+        # decreases signed distance through zero at the calibrated touch plane.
+        if offset < 0:
+            normal = -normal
+            offset = -offset
+
+        residual = points_3d @ normal + offset
+        median = float(np.median(residual))
+        mad = float(np.median(np.abs(residual - median)))
+        tolerance = float(np.clip(3.0 * 1.4826 * mad + 6.0, 10.0, 30.0))
+        return cls(normal, offset, tolerance, int(np.count_nonzero(valid)))
+
+    def signed_distance_mm(
         self,
-        raw_gap_mm: float,
         camera_point: np.ndarray,
-        frame_size: tuple[int, int],
+        depth_mm: float,
+        intrinsics: CameraIntrinsics,
     ) -> float:
-        return float(raw_gap_mm - self.expected_gap_mm(camera_point, frame_size))
+        point_3d = intrinsics.deproject(camera_point, depth_mm)
+        return float(point_3d @ self.normal + self.offset_mm)
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "coefficients": np.asarray(self.coefficients, dtype=float).tolist(),
+            "kind": "camera-space-plane-v1",
+            "normal": np.asarray(self.normal, dtype=float).tolist(),
+            "offset_mm": float(self.offset_mm),
             "tolerance_mm": float(self.tolerance_mm),
             "sample_count": int(self.sample_count),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, object]) -> "SpatialTouchCalibration":
-        coefficients = np.asarray(data["coefficients"], dtype=np.float64)
+        if data.get("kind") != "camera-space-plane-v1":
+            raise ValueError("Saved touch calibration is not a 3D plane")
+        normal = np.asarray(data["normal"], dtype=np.float64)
+        offset = float(data["offset_mm"])
         tolerance = float(data["tolerance_mm"])
         sample_count = int(data["sample_count"])
         if (
-            coefficients.shape != (3,)
-            or not np.isfinite(coefficients).all()
+            normal.shape != (3,)
+            or not np.isfinite(normal).all()
+            or not np.isclose(np.linalg.norm(normal), 1.0, atol=1e-3)
+            or not np.isfinite(offset)
             or not 2.0 <= tolerance <= 50.0
             or sample_count < 4
         ):
             raise ValueError("Invalid spatial touch calibration")
-        return cls(coefficients, tolerance, sample_count)
+        return cls(normal, offset, tolerance, sample_count)
 
 
 @dataclass(frozen=True)
@@ -808,6 +853,9 @@ class DepthTouchGate:
         if self._candidate_since is None:
             self._candidate_since = timestamp
             self._candidate_origin = point.copy()
+            if self.dwell_seconds <= 0:
+                self._active = True
+                return TouchDecision(True, True, None, "touch", gap_mm)
             return TouchDecision(False, True, None, "hold briefly", gap_mm)
         if float(np.linalg.norm(point - self._candidate_origin)) > self.maximum_dwell_motion:
             self._candidate_since = timestamp

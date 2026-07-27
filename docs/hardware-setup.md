@@ -179,15 +179,15 @@ layout have not moved.
 
 In RGB-D mode, 45 empty-wall frames produce a per-pixel median depth and noise
 map. MediaPipe locates the index fingertip in the color frame, and aligned depth
-measures the fingertip's gap from that learned wall reference. Four physical
-corner touches then fit a spatial contact-offset plane and refine the
-camera-to-projector homography. The gate uses the angle-corrected gap to reject
-hovering, invalid depth, and measurements behind the wall. The contact band
-defaults to `+/-5 mm`, with a `25 ms` activation dwell:
+provides its metric Z coordinate. Four physical corner touches are deprojected
+with the color-camera intrinsics to fit a true 3D contact plane and refine the
+camera-to-projector homography. The gate uses signed distance to that plane to
+reject hovering and invalid depth. The approach band defaults to `18 mm` with
+immediate activation:
 
 ```bash
 ./run_wall_touch_demo.sh \
-  --touch-plane-tolerance-mm 5 --touch-dwell-ms 25
+  --touch-plane-tolerance-mm 18 --touch-dwell-ms 0
 ```
 
 Lower `--touch-plane-tolerance-mm` to require contact closer to the calibrated
