@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a two-camera mode (`wall_touch_dual.py`, `./run_wall_touch_demo.sh --dual`):
+  a frontal **tracker** camera runs MediaPipe for the fingertip while a low /
+  grazing **touch** camera senses contact from depth, fused on the shared
+  projector plane (each camera has its own four-corner homography, so no
+  cross-camera stereo calibration is needed). `--tracker` and `--touch` accept
+  either sensor, so either physical camera can play either role. This solves the
+  single-grazing-camera case where MediaPipe fails on the foreshortened hand.
+
 - Add `--close-bottom` for a RealSense mounted close below the projection and
   aimed upward. It selects `640x480/30` High Density depth, longer wall/corner
   calibration, full-detail hand detection, a larger fingertip depth patch, and
