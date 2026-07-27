@@ -183,6 +183,17 @@ def main() -> None:
     print(f"Tracker [{args.tracker}]: {tracker_cam.identity}")
     print(f"Touch   [{args.touch}]: {touch_cam.identity}")
 
+    def usb_descriptor(camera: object) -> str:
+        return str(getattr(camera, "usb_type", None)
+                   or getattr(camera, "connection_type", "") or "")
+
+    if any("2." in usb_descriptor(c) or "USB2" in usb_descriptor(c).upper()
+           for c in (tracker_cam, touch_cam)):
+        print("WARNING: a camera is on USB 2.0. Two depth cameras cannot share one "
+              "USB-2 bus -- put each on its own USB-3 controller, or the touch camera "
+              "will keep dropping frames. Low-bandwidth fallback: --touch-width 424 "
+              "--touch-height 240 --camera-fps 15.")
+
     landmarker = create_landmarker(args.model, args.detection_confidence)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if args.enhance_contrast else None
 
@@ -221,6 +232,9 @@ def main() -> None:
     touch_camera_points: np.ndarray | None = None
     touch_wall_frames: list[np.ndarray] = []
     touch_tracker: DepthContactTracker | None = None
+    last_touch_frame: np.ndarray | None = None
+    last_touch_depth: np.ndarray | None = None
+    touch_misses = 0
 
     canvas = make_base_canvas(*output_size)
     brush = PaintBrush(args.brush_radius, args.paint_alpha)
@@ -234,19 +248,36 @@ def main() -> None:
 
     try:
         while True:
+            # The tracker is essential and read first; if it stalls, retry.
             try:
-                tracker_rgbd = tracker_cam.read(timeout_ms=800)
-                touch_rgbd = touch_cam.read(timeout_ms=800)
-            except RuntimeError as error:
-                print(f"Camera read warning: {error}")
+                tracker_rgbd = tracker_cam.read(timeout_ms=700)
+            except RuntimeError:
                 continue
             tracker_frame = tracker_rgbd.color_bgr
-            touch_frame = touch_rgbd.color_bgr
-            touch_depth = touch_rgbd.depth_mm
             tracker_size = (tracker_frame.shape[1], tracker_frame.shape[0])
-            touch_size = (touch_frame.shape[1], touch_frame.shape[0])
             tracker_debug = tracker_frame.copy()
-            touch_debug = touch_frame.copy()
+
+            # The touch camera is read opportunistically with a short timeout so a
+            # starved/flaky sensor cannot freeze the tracker. Reuse the last good
+            # frame between deliveries.
+            try:
+                touch_rgbd = touch_cam.read(timeout_ms=150)
+                last_touch_frame = touch_rgbd.color_bgr
+                last_touch_depth = touch_rgbd.depth_mm
+                touch_misses = 0
+            except RuntimeError:
+                touch_misses += 1
+                if touch_misses == 45 or (touch_misses and touch_misses % 300 == 0):
+                    print(f"Touch camera not delivering frames ({touch_misses}). Likely "
+                          "USB-2 bandwidth: give each camera its own USB-3 controller, "
+                          "or lower --touch-width/--touch-height/--camera-fps.")
+            touch_frame = last_touch_frame
+            touch_depth = last_touch_depth
+            touch_size = None if touch_frame is None else (touch_frame.shape[1], touch_frame.shape[0])
+            touch_debug = (
+                touch_frame.copy() if touch_frame is not None
+                else np.zeros((360, 640, 3), dtype=np.uint8)
+            )
 
             # --- resolve calibration state ---------------------------------
             if tracker_matrix is None and len(tracker_clicks) == 4:
@@ -260,7 +291,7 @@ def main() -> None:
                 except ValueError as error:
                     print(f"Tracker geometry rejected: {error}")
                     tracker_clicks.clear()
-            if touch_matrix is None and len(touch_clicks) == 4:
+            if touch_matrix is None and len(touch_clicks) == 4 and touch_size is not None:
                 pts = np.array(touch_clicks, dtype=np.float32)
                 try:
                     validate_camera_quad(pts, touch_size)
