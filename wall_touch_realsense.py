@@ -75,9 +75,24 @@ class RealSenseCamera:
         self.to_depth = rs.disparity_transform(False)
         self._configure_filters()
 
-        # Discard startup frames while stereo auto-exposure converges.
-        for _ in range(12):
-            self.pipeline.wait_for_frames(1500)
+        # Discard startup frames while stereo auto-exposure converges. Tolerate
+        # slow first frames -- when a second camera shares USB bandwidth the first
+        # frames can lag well past 1.5 s, which should not abort startup.
+        warmed = 0
+        for _ in range(40):
+            try:
+                self.pipeline.wait_for_frames(2500)
+            except RuntimeError:
+                continue
+            warmed += 1
+            if warmed >= 10:
+                break
+        if warmed == 0:
+            raise RuntimeError(
+                "RealSense did not deliver any startup frames. If a second camera "
+                "is attached, lower its resolution or move it to a separate USB "
+                "controller to free bandwidth."
+            )
 
     @staticmethod
     def _device_info(device: object, field: object) -> str:

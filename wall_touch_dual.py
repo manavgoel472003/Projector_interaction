@@ -65,6 +65,12 @@ def parse_args() -> argparse.Namespace:
                         help="Grazing/low camera used for depth contact sensing.")
     parser.add_argument("--realsense-preset", choices=("high-accuracy", "high-density"),
                         default="high-density")
+    parser.add_argument("--tracker-width", type=int, default=1280)
+    parser.add_argument("--tracker-height", type=int, default=720)
+    parser.add_argument("--touch-width", type=int, default=848,
+                        help="Touch camera width (kept modest to share USB bandwidth).")
+    parser.add_argument("--touch-height", type=int, default=480)
+    parser.add_argument("--camera-fps", type=int, default=30)
     parser.add_argument("--projector-width", type=int, default=1920)
     parser.add_argument("--projector-height", type=int, default=1200)
     parser.add_argument("--projector-x", type=int, default=0)
@@ -99,14 +105,17 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def open_camera(kind: str, realsense_preset: str):
+def open_camera(kind: str, realsense_preset: str, width: int, height: int, fps: int):
     if kind == "realsense":
         if realsense_device_count() <= 0:
             raise RuntimeError("No RealSense camera detected (needed for this role).")
-        return RealSenseCamera(depth_preset=realsense_preset)
+        return RealSenseCamera(
+            preferred_width=width, preferred_height=height, fps=fps,
+            depth_preset=realsense_preset,
+        )
     if orbbec_device_count() <= 0:
         raise RuntimeError("No Orbbec camera detected (needed for this role).")
-    return OrbbecCamera()
+    return OrbbecCamera(preferred_width=width, preferred_height=height, fps=fps)
 
 
 def prepare_detection_rgb(
@@ -163,8 +172,14 @@ def main() -> None:
     output_size = (args.projector_width, args.projector_height)
     output_points = projector_targets(*output_size)
 
-    tracker_cam = open_camera(args.tracker, args.realsense_preset)
-    touch_cam = open_camera(args.touch, args.realsense_preset)
+    tracker_cam = open_camera(
+        args.tracker, args.realsense_preset,
+        args.tracker_width, args.tracker_height, args.camera_fps,
+    )
+    touch_cam = open_camera(
+        args.touch, args.realsense_preset,
+        args.touch_width, args.touch_height, args.camera_fps,
+    )
     print(f"Tracker [{args.tracker}]: {tracker_cam.identity}")
     print(f"Touch   [{args.touch}]: {touch_cam.identity}")
 
